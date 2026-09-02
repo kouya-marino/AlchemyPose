@@ -1,6 +1,6 @@
 import pytest
 
-from alchemypose.core.topology import COCO_WHOLEBODY_133
+from alchemypose.core.topology import COCO_WHOLEBODY_133, RENDER_GROUPS
 
 T = COCO_WHOLEBODY_133
 
@@ -96,3 +96,17 @@ def test_no_group_contains_a_duplicate_index() -> None:
 def test_broad_groups_are_sorted() -> None:
     for name, indices in T.groups.items():
         assert list(indices) == sorted(indices), f"{name} is not in ascending order"
+
+
+def test_every_render_group_has_an_index_unique_to_itself() -> None:
+    """The layer panel decides a row is checked with a SUBSET test, so no render group
+    may be a subset of another — otherwise selecting one group would silently check its
+    neighbour too. Overlap on shared anchor joints is fine; total containment is not.
+    """
+    for name, indices in RENDER_GROUPS.items():
+        others = {i for other, group in RENDER_GROUPS.items() if other != name for i in group}
+        unique = set(indices) - others
+        assert unique, (
+            f"{name} has no index of its own — it is fully contained in the union of the "
+            f"other groups, which breaks LayerPanel.set_selection's subset check"
+        )
