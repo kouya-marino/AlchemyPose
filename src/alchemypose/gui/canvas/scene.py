@@ -21,14 +21,45 @@ from alchemypose.gui import theme
 from alchemypose.gui.canvas.items import BoneItem, KeypointItem
 from alchemypose.gui.canvas.view import PoseCanvas
 
-DASH_BELOW = 0.5
-"""A bone whose endpoint confidence falls under this is drawn dashed."""
+# --- Confidence cue calibration -------------------------------------------
+# These three numbers are NOT self-evident and were NOT guessed. They were
+# calibrated against measured ``PersonPose.scores`` distributions from real
+# RTMW output (RTMW-m = preset ``lite``, RTMW-l = preset ``performance``) on
+# ``tests/integration/fixtures/two_people.jpg`` at the default 0.3 threshold,
+# *after* scores were normalised to honest [0, 1] confidences at the engine
+# boundary (``simcc.decode_simcc`` / ``rtmw.PEAK_SCALE``). Their first values
+# (dash 0.5, full 0.8) were set while scores were unnormalised logits and,
+# against honest confidences, dashed ~72% of the default preset's skeleton and
+# let none of it reach full opacity — a cue that applies to everything is no
+# cue. If the score pipeline changes again, RE-MEASURE (the script lives in
+# the Task 21 report) rather than re-tune by eye.
 
-FULL_OPACITY_ABOVE = 0.8
-"""Scores at or above this draw fully opaque; below it the item fades towards the threshold."""
+DASH_BELOW = 0.25
+"""A bone whose weaker endpoint confidence falls under this is drawn dashed.
+
+Calibrated (see above): on honest confidences this dashes 0% of surviving
+body bones for both models at the 0.3 threshold — dashing is reserved for
+genuinely doubtful limbs, which appear once the user lowers the threshold.
+"""
+
+FULL_OPACITY_ABOVE = 0.55
+"""Scores at or above this draw fully opaque; below it the item fades towards the threshold.
+
+Calibrated (see above): ``lite`` scores are uniformly high (median ~0.92) and
+render fully opaque, which is the honest picture; ``performance`` keeps a
+visible spread (median opacity ~0.66, 17% at full) without reading as broken.
+"""
 
 MIN_OPACITY = 0.35
-"""The faintest a keypoint that survived the threshold is allowed to get."""
+"""The faintest a keypoint that survived the threshold is allowed to get.
+
+Re-checked (not assumed) in the same calibration: on ``performance`` at the
+0.3 threshold, 15% of surviving body keypoints sit within 0.10 of this floor
+(their scores are 0.30-0.36), so the floor is what keeps a quarter of the
+default preset's skeleton legible at all. Raising it would compress the
+0.35-1.0 spread the knee retune just restored; lowering it would make those
+joints vanish into the dark canvas. Unchanged on evidence, not by default.
+"""
 
 DIM_FACTOR = 0.25
 """Multiplier applied to every item outside the emphasised group."""
@@ -206,7 +237,15 @@ class PoseOverlay(QObject):
                 continue
 
             def drawable(i: int) -> bool:
-                return self._selection.is_visible(i) and float(person.scores[i]) >= self._threshold
+                # A score of exactly 0.0 is not "zero confidence" but a sentinel:
+                # ``decode_simcc`` clips to [0, 1], so 0.0 arises only from a
+                # non-positive SimCC peak, whose *position* it also zeroes.
+                # Un-transformed, that (0, 0) lands on the crop's top-left
+                # corner. The slider can reach 0.0, and ``>=`` alone would then
+                # pile such joints on each person's box corner; skip them
+                # regardless of threshold.
+                score = float(person.scores[i])
+                return self._selection.is_visible(i) and score > 0.0 and score >= self._threshold
 
             for a, b in topology.edges:
                 if not (drawable(a) and drawable(b)):
