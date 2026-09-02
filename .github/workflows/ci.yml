@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One job, four gates, in the order a developer runs them locally: lint, then
+  # types, then the tests that need nothing, then the tests that need a Qt
+  # platform. Splitting them into parallel jobs would mean installing PySide6
+  # (~80 MB of wheel) three times to save a minute.
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 3.12 only, and deliberately not a matrix. pyproject pins
+      # requires-python to ">=3.12,<3.13": numpy 2.5.2 ships type stubs written
+      # in 3.12 syntax, so mypy cannot even parse them under 3.11 — a 3.11 entry
+      # would not be a broader test, it would be a guaranteed red X.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # PySide6 bundles its own libQt6*.so files, but those are linked against
+      # system libraries a bare runner does not carry. Every package below
+      # answers a DT_NEEDED entry of a library the *offscreen* path actually
+      # loads — read out of the manylinux wheel's ELF headers, not guessed:
+      #
+      #   libegl1         libEGL.so.1        <- libQt6Gui
+      #   libgl1          libGL.so.1         <- libQt6Gui, libQt6Widgets,
+      #                                         libqoffscreen, QtGui.abi3.so
+      #   libx11-6        libX11.so.6        <- libQt6Gui, libqoffscreen
+      #   libxkbcommon0   libxkbcommon.so.0  <- libQt6Gui, libQt6Widgets,
+      #                                         libqoffscreen
+      #   libfontconfig1  libfontconfig.so.1 <- libQt6Gui (brings libfreetype6)
+      #   libdbus-1-3     libdbus-1.so.3     <- libQt6DBus, which libQt6Gui needs
+      #   glib            libglib-2.0.so.0   <- libQt6Core, libQt6Gui
+      #
+      # What is deliberately *absent*: libxkbcommon-x11-0 and the whole libxcb-*
+      # set. Those are linked by libQt6XcbQpa and libqxcb — the X11 platform
+      # plugin — and QT_QPA_PLATFORM=offscreen never loads it. Installing them
+      # would only make the runner slower and the reason for the list untrue.
+      # libz, libzstd and libstdc++ are dependencies of dpkg and gcc, so they
+      # are already on every runner.
+      - name: System libraries PySide6 links against
+        run: |
+          # Ubuntu's 64-bit time_t transition renamed glib's runtime package in
+          # 24.04. Take whichever name this release actually has, so a future
+          # ubuntu-latest cannot fail here on a package name alone.
+          glib=libglib2.0-0t64
+          apt-cache show "$glib" >/dev/null 2>&1 || glib=libglib2.0-0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libx11-6 libxkbcommon0 \
+            libfontconfig1 libdbus-1-3 "$glib"
+
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check src tests
+
+      # No arguments: pyproject already points mypy at the alchemypose package
+      # with src on the path.
+      - name: Type check
+        run: mypy
+
+      # core/ and inference/ with no weights, no display and no network — every
+      # download in these tests is monkeypatched out.
+      #
+      # tests/integration is excluded by path. It is the only place marked
+      # `models`, and it wants ~480 MB of cached ONNX files that CI has no
+      # business fetching. Running plain `pytest` here would not download them
+      # either — every integration fixture checks the cache and calls
+      # pytest.skip before it constructs an engine — but not collecting them at
+      # all is the guarantee; the skip is just the backstop.
+      - name: Unit tests
+        run: pytest tests/unit
+
+      # A widget cannot be constructed without a platform plugin, so prove the
+      # plugin loads before blaming the tests. offscreen is a real QPA plugin
+      # that renders into a buffer: no xvfb, no display, no X server.
+      - name: Confirm Qt starts headless
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -c "
+          from PySide6.QtCore import qVersion
+          from PySide6.QtWidgets import QApplication
+          app = QApplication([])
+          print('Qt', qVersion(), 'on platform', app.platformName())
+          "
+
+      - name: GUI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/gui

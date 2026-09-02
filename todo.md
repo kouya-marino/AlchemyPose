@@ -1,0 +1,223 @@
+# Todo
+
+Actionable work, grouped by the version it belongs to. `versions.md` explains
+*why* each version exists; this is the checklist.
+
+Convention: one branch and one pull request per version. Tick items as they
+merge, not as they are written. *(v1 is the exception — it was built directly on
+`main` by agreement, because the repository was one commit old and had no
+collaborators. The convention starts at v2.)*
+
+**Every version updates `README.md` in its own pull request.** It is the PyPI
+project page, so a deferred README means publishing a description that is wrong.
+AlchemyFace shipped three releases that way because the update was scheduled for
+1.0.0. It nearly happened here too: the README was written a third of the way
+through v1 and described the GUI as "being assembled" until the very end.
+
+**A test only counts once it has been seen to fail.** Every fix in v1 was checked
+by reverting it and confirming the new test goes red. Two tests in this build
+could not fail and were rewritten or deleted; a test that cannot fail is worse
+than no test, because it reports safety.
+
+---
+
+## Done — v1 · the library and the engine
+
+### Scaffold
+- [x] `pyproject.toml`, `src/` layout, `py.typed`, MIT `LICENSE`, ruff + mypy
+      configuration, pyenv virtualenv `alchemypose` on Python 3.12.7.
+- [x] Lazy `App` resolution in `alchemypose/__init__.py`, with a subprocess test
+      asserting `import alchemypose` loads zero `PySide6` modules.
+- [x] Target Python 3.12 throughout. *(Started at 3.11, which silently disabled
+      mypy entirely: numpy 2.5.2's stubs use PEP 695 syntax and mypy aborted on
+      them before reaching a project file.)*
+
+### `core/` — no Qt, no onnxruntime
+- [x] COCO-WholeBody 133 topology: names, 127 edges, index ranges, render groups.
+- [x] Render groups as a **cover, not a partition** — each limb owns its proximal
+      anchor joint, plus wrist→hand connector edges. *(As a partition, "show the
+      left leg" drew a shin and "show the left foot" drew three isolated dots.)*
+- [x] Deduplicate the broad-group unions, which the overlap change broke.
+- [x] `PersonPose` / `PoseFrame` / `PoseResult` / `Camera` / `Space` /
+      `KeypointSelection`, with `track_id`, `keypoints_3d` and `space_3d` present
+      and unpopulated from day one.
+- [x] Nine named presets; `matching_preset` for chip highlighting.
+- [x] JSON and CSV serialisation, round-tripping. Non-finite values encode as
+      `null` rather than invalid JSON.
+- [x] COCO-WholeBody → H36M-17 mapping, with pelvis, thorax, spine and head
+      synthesised and the joint order pinned by a test.
+
+### `inference/` — no Qt
+- [x] Weight registry, cache directory, `ALCHEMYPOSE_MODEL_DIR` override, SHA-256
+      verification of the **extracted** `.onnx` (every openmmlab artefact is a
+      zip), and verify-before-publish so a failed download leaves no files behind.
+- [x] Vendored SimCC decoding and top-down affine cropping.
+- [x] ONNX session construction and the CPU/CoreML provider split, with a CPU
+      fallback driven by a throwaway run on zeros rather than by a guard around
+      session creation. *(CoreML creates the YOLOX session without complaint and
+      reports both providers; it fails on the first `run()`, so a guard that only
+      wraps the constructor would never fire.)*
+- [x] YOLOX detector. *(The exported graph bakes in NMS and emits
+      `dets(1,N,5)` + `labels(1,N)`, not a raw regression head.)*
+- [x] `RTMWEngine` implementing `PoseEngine`. *(ImageNet normalisation in RGB
+      order — raw 0–255 BGR produced confident, anatomically impossible keypoints
+      with no error at all.)*
+- [x] Per-model peak scale, so `PersonPose.scores` is a real 0–1 quantity and the
+      confidence threshold is not inert.
+- [x] Worker thread over a queue, latest-request-wins, no Qt import.
+- [x] `alchemypose image | models list | fetch | clear | version | gui`.
+- [x] Integration fixture with recorded provenance and a public-domain licence.
+
+### `gui/`
+- [x] Theme, palette, person's-left/right/midline colour convention, `Reporter`
+      protocol injected so no test opens a modal.
+- [x] Application shell and main window.
+- [x] `PoseCanvas` — image, zoom anchored under the cursor, middle-drag pan.
+- [x] Skeleton overlay: gradient bones, constant-size joints, per-group colour.
+- [x] Tri-state layer tree as the single source of truth for visibility.
+- [x] Preset chips that write to the tree and highlight on exact match.
+- [x] Click to select, double-click or `Shift+H` to solo, `Esc` / `Alt+H` to
+      restore, hover to brighten.
+- [x] Open an image, run inference off the UI thread, show the result. Stale
+      results from a superseded image are discarded rather than drawn.
+- [x] Drop overlay items **and** the cached result when the image is replaced.
+      *(`scene.clear()` was destroying items the overlay still referenced; and the
+      stale result redrew photo A's skeleton over photo B.)*
+- [x] Confidence slider, hover inspector, legend. The stored result is never
+      mutated by the threshold.
+- [x] One emphasis mechanism, on the overlay, so a rebuild reproduces the dimming
+      instead of discarding it.
+- [x] Confidence-driven opacity and dashed low-confidence bones, recalibrated
+      against real score distributions after the peak-scale fix.
+- [x] Staggered load animation, torso → limbs → feet → hands → face.
+
+---
+
+## Open — v1
+
+### Deferred minors, to batch into one commit
+- [ ] `SelectionController._sync_overlay_from_layers` pushes the bare tree
+      selection, bypassing the window's person filter — so a solo or a clear drops
+      the chosen person until the next tree or chip change. Either the controller
+      asks the window for its effective selection, or the overlay holds the person
+      filter separately from `visible`.
+- [ ] Nothing calls `PoseOverlay.animate_in()`. It exists, it is tested, and
+      `MainWindow._on_result` is where it belongs — one line.
+- [ ] Nothing calls `PoseOverlay.set_image_dimmed()` either. The photograph is
+      meant to fall back to ~60% opacity once a selection exists, so the skeleton
+      reads as the subject — `theme.DIMMED_IMAGE_OPACITY` is already 0.6 and the
+      method already applies it. `SelectionController`'s `select_group` /
+      `solo_group` / `clear` are the call sites.
+- [ ] Move `PEAK_SCALE` onto `ModelSpec` in `weights.py`. It is a per-model
+      constant like `input_size`, and it currently lives in `rtmw.py` away from
+      everything else that describes a model. Mechanical.
+- [ ] `SelectionController._emphasised` and `PoseOverlay._emphasis` track
+      overlapping state and can legitimately disagree while soloed. Deliberate for
+      now; revisit if any panel reads emphasis from both.
+- [ ] A keypoint with no peak is zeroed in *model-input* space and then affine
+      untransformed, so it lands at the crop's top-left corner rather than at the
+      image origin. Harmless while it is hidden, but at threshold 0.0 it is drawn
+      there.
+- [ ] `ruff format` would reformat 28 files. The project gates on `ruff check`,
+      which passes; decide whether to adopt the formatter and do it in one commit,
+      or say in the README that it is deliberately not used.
+
+### Face level-of-detail
+- [ ] `gui/canvas/lod.py`: `FaceDetail` (`CONTOURS` / `REGIONS` / `POINTS`) and
+      `face_detail(face_box_screen_px)`, thresholds at 80 px and 200 px.
+- [ ] `PoseCanvas.zoom_changed = Signal(float)`, emitted from `zoom_by`,
+      `fit_to_window` and `zoom_to_rect`; `PoseOverlay.on_zoom_changed` rebuilds
+      only when the zoom crosses a threshold.
+- [ ] Skip individual face points below `POINTS`. At fit-to-window, 68 dots are a
+      grey smudge — contours read as a face at any size.
+- [ ] The **Face** preset chip calls `zoom_to_rect` on the face bounds, so it
+      delivers the magnification a face tab would have given without the mode.
+
+### Export
+- [ ] `gui/export.py`: `export_json`, `export_csv`, `export_png`. The PNG renders
+      the **scene**, not the widget, so it comes out at the source image's own
+      resolution regardless of zoom or window size.
+- [ ] An Export menu wired to file dialogs, refusing politely when there is
+      nothing to export.
+- [ ] Decide what a PNG export of a *soloed* selection should contain — the
+      visible overlay only, or the whole skeleton. The visible overlay, probably;
+      it is what the user is looking at.
+
+### README, CI and release
+- [x] Rewrite the README for what v1 actually does: the window and its gestures,
+      the CLI with real transcripts, what a confidence score means and why it
+      needed work, and a roadmap with the right boxes ticked. *(It had gone stale
+      almost immediately — it still described the GUI as "being assembled" with
+      the detector, engine, worker, CLI, canvas and layer tree all listed as
+      outstanding.)*
+- [x] Say plainly what the README's timing table measures. It is now the pose
+      model alone, per detected person, with the detector's per-frame cost stated
+      separately. End to end on the fixture, warm, on this machine: `lite` 17 ms
+      for 2 people, `performance` 112 ms for 3 — consistent with the parts.
+- [x] `.github/workflows/ci.yml` — ruff, mypy, `pytest tests/unit`, then the GUI
+      suite under `QT_QPA_PLATFORM=offscreen`. Python 3.12 only, not a matrix: a
+      3.11 entry would be a guaranteed red X, since numpy's stubs will not parse
+      under it. `tests/integration` is excluded by path so CI cannot pull 464 MB
+      of weights; the in-test cache check is the backstop, not the guarantee.
+- [ ] **CI has never actually run.** The workflow file is not committed, so GitHub
+      has never seen it and it is untested against a real runner — including the
+      hand-derived list of system libraries the PySide6 wheel links against.
+      AlchemyFace shipped a publish workflow advertising "the same checks as CI"
+      that silently skipped every GUI test, and a wheel check that reported a leak
+      which did not exist because it ran from the wrong directory. Assume this one
+      is wrong until a run is green.
+- [ ] `tests/unit/test_readme.py` — assert the README names the install command,
+      the launch command, the download size, the model and its licence. Prose
+      about being kept current is not a mechanism; a test is.
+- [ ] A screenshot of the window with a multi-person image and the skeleton
+      visible. This is a portfolio piece and the README is the first thing seen —
+      and it is currently a page about a visual tool with no picture on it.
+- [ ] Tag and publish. The wheel must stay small — no weights, no fixtures.
+
+---
+
+## Later
+
+### v2 · video
+- [ ] `PyAV` for frame-accurate seeking, as an extra rather than a base dependency.
+- [ ] Populate `track_id`. The field has been there since the schema's first
+      commit; this is the version that fills it.
+- [ ] Scrubbing on the existing latest-request-wins worker — a new frame
+      supersedes any queued frame that has not started, which is already how it
+      behaves.
+- [ ] Temporal smoothing, and a decision about whether smoothed coordinates are
+      stored or applied at render time. *(v1's rule is that coordinates are stored
+      raw; smoothing should not be the thing that breaks it.)*
+- [ ] Revisit `rtmlib`'s `PoseTracker` as a reference for the tracking half.
+- [ ] Webcam, which arrives with the video work.
+
+### v3 · 3D
+- [ ] RTMW3D in place of RTMW. Same 133-keypoint topology plus a third
+      coordinate, so the layer tree, render groups, presets and selection logic
+      carry over unchanged.
+- [ ] Populate `keypoints_3d` and set `space_3d`.
+- [ ] The orbitable viewport, on the declared `threed` extra (`pyqtgraph` +
+      `PyOpenGL`). **Never** `PySide6.QtQuick3D` or `PySide6.QtGraphs` — both are
+      commercial-or-GPLv3 with no LGPL option, and importing either relicenses the
+      distributed application.
+- [ ] glTF export, converting to y-up at the boundary and nowhere else.
+- [ ] `core/h36m.py` finally gets a caller.
+
+---
+
+## Open questions
+
+- [ ] Should the peak scale be exposed at all — a `PersonPose.score_scale`, or a
+      note in the exported JSON? Exports written before the fix carry raw 10×
+      scores under the same `schema_version: 1`, so nothing flags them on reload.
+      Bumping the schema version for a field that did not change is heavy-handed;
+      doing nothing means two files can disagree silently.
+- [ ] `Tab` to cycle the selected person was part of the intended keyboard map
+      and is not implemented. The numbered person chips in the toolbar cover the
+      same ground. Add the shortcut, or accept the chips as the answer and stop
+      carrying it as an omission?
+- [ ] rtmlib ships `kpt_thr=0.43` against unbounded SimCC peaks on the same RTMW-l
+      weights used here, where it filters almost nothing. Worth reporting upstream.
+- [ ] The `balanced` preset is DWPose-l rather than an RTMW variant, so it is the
+      one model in the table from a different lineage. Keep it for the size/quality
+      point it makes, or drop it for a consistent family?

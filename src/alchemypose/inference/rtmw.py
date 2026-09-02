@@ -1,26 +1,27 @@
 # src/alchemypose/inference/rtmw.py
 """Detector plus pose model, assembled into a PoseEngine.
 
-**Preprocessing correction, found empirically (see the task report):** the
-RTMW/RTMPose ONNX graphs have no ``Sub``/``Div`` node ahead of their first
-convolution, which could be misread as "feed raw 0..255 pixels". Doing that
-produces plausible-*looking* output — SimCC still returns confident-seeming
-scores and in-bounds coordinates — but the keypoints are anatomically
-incoherent (hips decoded above the shoulders, ankles above the hips, left/right
-keypoints scattered across the whole crop). Normalising with mmpretrain's
-standard ImageNet mean/std before feeding the network produces coherent,
-correctly-ordered keypoints on the same crop. The mean/std subtraction is
-evidently something the exported SDK pipeline expects the *caller* to do
-(the zip's discarded ``pipeline.json``, not the ``.onnx`` graph itself) —
-exactly the kind of silent, plausible-looking wrongness this task warned
-about.
+**Preprocessing correction, found empirically:** the RTMW/RTMPose ONNX graphs
+have no ``Sub``/``Div`` node ahead of their first convolution, which could be
+misread as "feed raw 0..255 pixels". Doing that produces plausible-*looking*
+output — SimCC still returns confident-seeming scores and in-bounds
+coordinates — but the keypoints are anatomically incoherent (hips decoded above
+the shoulders, ankles above the hips, left/right keypoints scattered across the
+whole crop). Normalising with mmpretrain's standard ImageNet mean/std before
+feeding the network produces coherent, correctly-ordered keypoints on the same
+crop. The mean/std subtraction is evidently something the exported SDK pipeline
+expects the *caller* to do (the zip's discarded ``pipeline.json``, not the
+``.onnx`` graph itself). Neither the graph nor onnxruntime complains when it is
+skipped, so the only evidence that the input is wrong is the anatomy of the
+output: when changing anything upstream of ``normalise_crop``, check joint
+ordering on a real photograph rather than trusting in-range coordinates and
+healthy-looking scores.
 
-**Score-scale correction, also found empirically (see the score-scale
-report):** the graphs end in a bare ``MatMul`` — no softmax, no sigmoid — so
-the SimCC peak they emit is a logit whose height depends on the model's
-training temperature, not a confidence. ``PEAK_SCALE`` below records that
-height per model so ``decode_simcc`` can return a 0..1 confidence that means
-the same thing for every preset.
+**Score-scale correction, also found empirically:** the graphs end in a bare
+``MatMul`` — no softmax, no sigmoid — so the SimCC peak they emit is a logit
+whose height depends on the model's training temperature, not a confidence.
+``PEAK_SCALE`` below records that height per model so ``decode_simcc`` can
+return a 0..1 confidence that means the same thing for every preset.
 """
 
 from __future__ import annotations
@@ -50,8 +51,8 @@ _IMAGENET_STD_RGB: F32 = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 #: a confident peak converges to about ``label_beta / beta`` — 1.0 for the RTMPose
 #: body / DWPose configs (``beta=10``) and 10.0 for the RTMW configs (``beta=1,
 #: label_beta=10``). Every value below was checked against real output on four
-#: photographs (score-scale report): RTMW-m peaks at 1.03, DWPose-l at 1.01,
-#: RTMW-l at 8.6, all with the same ranking of confident versus doubtful joints.
+#: photographs: RTMW-m peaks at 1.03, DWPose-l at 1.01, RTMW-l at 8.6, all with
+#: the same ranking of confident versus doubtful joints.
 #: RTMW-m's *published* config says ``beta=1`` yet its shipped ONNX (a distilled
 #: checkpoint) behaves like a ``beta=10`` model, which is why this table is
 #: measured, not derived from configs. Every pose model in ``weights.PRESETS``
@@ -100,6 +101,7 @@ class RTMWEngine:
 
         self._detector = YoloxDetector(weights.ensure(det_key), input_size=det_spec.input_size[0])
         # CoreML here is the whole speed story: 60 ms -> 25 ms per person for RTMW-l.
+        # make_session proves the provider can run the graph before returning the session.
         self._pose = make_session(weights.ensure(pose_key), prefer_coreml=True)
         self._pose_input = self._pose.get_inputs()[0].name
         self._preset = preset

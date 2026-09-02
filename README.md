@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![Python 3.12](https://img.shields.io/badge/python-3.12%20only-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -13,9 +13,11 @@ Drop in a photograph. Every person in it gets 133 keypoints — body, feet, face
 both hands — and you choose what to look at: the whole skeleton, one hand, the left
 leg, the face on its own.
 
-> **Status: in development.** The core data model and the inference stack are built
-> and tested; the desktop GUI is being assembled. See [Roadmap](#roadmap) for what
-> works today.
+> **Status: v1 works, on single images.** Open a photograph and every person in it
+> comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
+> chips and a confidence slider. The CLI writes the same result as JSON or CSV. Still
+> missing: an export button in the window, face level-of-detail, and video. See
+> [Roadmap](#roadmap).
 
 ---
 
@@ -74,27 +76,140 @@ pip install -e ".[dev]"
 ```
 
 **Install weight, stated honestly.** The package itself is small, but
-`PySide6_Essentials` is about 110 MB and the default model preset downloads roughly
-250 MB on first use. Both are one-time. The `lite` preset is about 63 MB if you would
-rather trade accuracy for footprint.
+`PySide6_Essentials` is about 110 MB to download and about 335 MB once installed, and
+the default model preset adds 253 MB of weights on first use (235 MB over the wire).
+Both are one-time. The `lite` preset is 63 MB if you would rather trade accuracy for
+footprint.
+
+On a bare Linux box the PySide6 wheel also needs a handful of system libraries it
+links against but does not carry (`libegl1`, `libgl1`, `libx11-6`, `libxkbcommon0`,
+`libfontconfig1`, `libdbus-1-3`, glib) — see `.github/workflows/ci.yml`, which
+installs exactly that set and nothing more.
+
+---
+
+## Using it
+
+### The window
+
+```bash
+alchemypose gui
+```
+
+`Cmd+O` opens an image — `Ctrl+O` on Windows and Linux, since the action takes Qt's
+standard Open sequence. The photograph appears immediately and inference runs on a
+worker thread, so the window never freezes; the skeleton lands when the model is done.
+`Ctrl`+wheel zooms under the cursor (a bare wheel scrolls the view), and the middle
+button drags to pan.
+
+Everything on the right decides what is drawn. The layer tree is the single source
+of truth — a two-level, tri-state list of render groups — and the preset chips above
+it (Full, Upper, Lower, Left, Right, Hands, Face, All, None) simply set its check
+states, so a chip lights up whenever the tree happens to equal it, including when you
+got there by hand. With more than one person, the numbered chips in the toolbar
+narrow everything to one subject.
+
+On the canvas, clicking a joint emphasises its group and fades the rest; double-click
+(or `Shift+H`) solos it and hides everything else; `Esc` or `Alt+H` puts it back.
+Hovering reads the keypoint's name, confidence and group into the inspector.
+
+### One image, from the shell
+
+```console
+$ alchemypose image tests/integration/fixtures/two_people.jpg --preset lite --json /tmp/out.json
+Wrote /tmp/out.json
+```
+
+Without `--json` the result goes to stdout; `--csv` also writes the flat
+`frame,person,keypoint_index,keypoint_name,x,y,score` form. The JSON carries the
+topology inline, so a result stays readable years later without this package:
+
+```console
+$ python - <<'PY'
+import json
+import numpy as np
+r = json.load(open("/tmp/out.json"))
+frame = r["frames"][0]
+print(r["model"], frame["image_size"], len(frame["people"]), "people")
+for i, p in enumerate(frame["people"]):
+    s = np.array(p["scores"])
+    print(f"person {i}: {len(p['keypoints'])} keypoints, confidence {s.min():.2f}-{s.max():.2f} (median {np.median(s):.2f})")
+PY
+rtmw_m_256x192 [982, 670] 2 people
+person 0: 133 keypoints, confidence 0.56-1.00 (median 0.94)
+person 1: 133 keypoints, confidence 0.61-1.00 (median 0.90)
+```
+
+Weights are fetched on first use. To pay for that up front:
+
+```console
+$ alchemypose models fetch --preset lite
+Fetching yolox_nano ...
+Fetching rtmw_m_256x192 ...
+Done.
+
+$ alchemypose models list
+Cache: /Users/you/Library/Caches/alchemypose
+
+lite:
+  yolox_nano             cached
+  rtmw_m_256x192         cached
+
+balanced:
+  yolox_tiny             cached
+  dwpose_l_384x288       cached
+
+performance:
+  yolox_s                cached
+  rtmw_l_384x288         cached
+```
+
+### What a score means
+
+Every keypoint carries a confidence in `[0, 1]`, and it means the same thing whichever
+preset produced it. That took work: the RTMPose-family graphs end in a bare `MatMul`
+— no softmax, no sigmoid — so the raw SimCC peak is a logit whose height depends on
+the model's training temperature. Measured on real output, a confident peak reaches
+about 1.0 on RTMW-m and DWPose-l but an order of magnitude more on RTMW-l — 8.576 was
+the highest of the fixture's 399 — which made a fixed 0..1 threshold meaningless
+across presets and inert on the default one. `rtmw.PEAK_SCALE` records the divisor per
+model, 1.0 for the first two and 10.0 for RTMW-l, and decoding divides it out and
+clips to [0, 1]. It is a monotone confidence, not a calibrated probability — nothing
+in the training objective makes it one.
+
+The window's slider filters on exactly that number and starts at **0.30**. Below it a
+keypoint is not drawn at all; from there the drawing fades in, reaching full opacity
+at 0.55, and a bone whose weaker end is under 0.25 is drawn dashed. Those three
+numbers were calibrated against measured score distributions, not chosen by eye.
 
 ---
 
 ## Models
 
-Weights are downloaded on first use into `~/Library/Caches/alchemypose`
-(override with `ALCHEMYPOSE_MODEL_DIR`) and verified against a recorded SHA-256.
-Nothing is vendored in the repository or the wheel.
+Weights are downloaded on first use into the platform cache directory
+(`~/Library/Caches/alchemypose` on macOS, `~/.cache/alchemypose` on Linux; override
+with `ALCHEMYPOSE_MODEL_DIR`) and verified against a recorded SHA-256. Nothing is
+vendored in the repository or the wheel.
 
-| Preset | Detector + pose model | Download | Per person on an M5 |
+| Preset | Detector + pose model | On disk | Pose model, per person |
 |---|---|---|---|
-| `lite` | YOLOX-nano + RTMW-m 256×192 | ~63 MB | ~4 ms (CoreML) |
-| `balanced` | YOLOX-tiny + DWPose-l 384×288 | ~148 MB | ~14 ms (CoreML) |
-| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | ~253 MB | ~25 ms (CoreML) |
+| `lite` | YOLOX-nano + RTMW-m 256×192 | 63 MB | ~4 ms |
+| `balanced` | YOLOX-tiny + DWPose-l 384×288 | 148 MB | ~13 ms |
+| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | ~20 ms |
+
+Sizes are the extracted `.onnx` files as they sit in the cache, in binary megabytes —
+the figures `ls -lh` and `du -h` print — so the three rows add up to the 464 MB all six
+files occupy together. Upstream ships them inside zips, so the transfer itself is
+slightly smaller (59 / 138 / 235 MB). Timings are the pose model alone, per detected
+person, on CoreML on an M5 — the detector adds 6 ms (`lite`) to 39 ms (`performance`)
+per frame, whatever the head count.
 
 The person detector runs on the CPU execution provider and the pose model on CoreML.
-That split is not a tuning choice — ONNX Runtime's CoreML provider raises a rank
-mismatch on the YOLOX graph and cannot create a session for it.
+That split is not a tuning choice, though the reason is narrower than "CoreML cannot
+load that graph". It loads it — the session is created and reports both providers —
+and then raises a rank mismatch on the first `run()`, inside the partition holding
+YOLOX's baked-in NMS. Sessions are therefore proved with one throwaway inference on
+zeros and demoted to CPU if it fails.
 
 All model weights are Apache-2.0, from the MMPose project.
 
@@ -102,20 +217,26 @@ All model weights are Apache-2.0, from the MMPose project.
 
 ## Architecture
 
-Three layers, with hard import boundaries enforced by a test:
+Layers, with the Qt boundary enforced by a test:
 
 ```
 core/        topology · schema · presets · serialization · H36M mapping
              no Qt, no onnxruntime — pure data, testable anywhere
 
-inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache
-             no Qt
+media/       reading an image as upright BGR, EXIF applied
 
-gui/         PySide6: canvas, layer tree, presets, export
+inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache ·
+             the worker thread — no Qt, so it is testable headless
+
+gui/         PySide6: canvas · layer tree · preset and person chips ·
+             confidence slider · inspector
 ```
 
 `import alchemypose` pulls in no Qt at all — the application class resolves lazily —
-so the library half runs headless, in CI, and on a machine with no display.
+so the library half runs headless, in CI, and on a machine with no display. The
+inference worker is plain `threading`; `gui/bridge.py` is the only place it meets Qt,
+and it does so by emitting signals, so nothing on a worker thread ever touches a
+widget.
 
 One result structure serves every phase. `PersonPose` carries `track_id` and
 `keypoints_3d` fields that stay empty in v1, so video and 3D are additive rather than
@@ -134,10 +255,12 @@ a schema migration.
 - [x] Model registry with cached, checksum-verified downloads
 - [x] ONNX sessions with the CPU/CoreML provider split
 - [x] SimCC decoding and top-down affine cropping
-- [ ] YOLOX detector and the assembled pose engine
-- [ ] Inference worker and CLI
-- [ ] Canvas, layer tree, preset chips, selection
-- [ ] Face level-of-detail, confidence rendering, export
+- [x] YOLOX detector and the assembled pose engine
+- [x] Inference worker and CLI
+- [x] Canvas, layer tree, preset chips, selection
+- [x] Confidence: honest 0..1 scores, threshold slider, fade and dashed bones
+- [ ] Face level-of-detail
+- [ ] Export from the window
 
 **v2 — video.** Upload and scrub, per-frame overlay, tracking, temporal smoothing.
 
@@ -155,6 +278,14 @@ mypy
 QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
+
+The GUI tests need a Qt platform plugin, not a display: `offscreen` renders into a
+buffer, so there is no xvfb anywhere in this project.
+
+CI (`.github/workflows/ci.yml`) runs the first four of those on Python 3.12 — the only
+version, because `requires-python` is pinned to `>=3.12,<3.13`. It never runs the
+integration tests: they want all 464 MB of cached weights, and a CI job has no
+business downloading that. On a machine without them they skip rather than fail.
 
 ---
 
