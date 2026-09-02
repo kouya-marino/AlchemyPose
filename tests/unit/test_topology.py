@@ -84,3 +84,15 @@ def test_hands_connect_to_the_arms() -> None:
     normalised = {tuple(sorted(e)) for e in T.edges}
     assert (9, 91) in normalised
     assert (10, 112) in normalised
+
+
+def test_no_group_contains_a_duplicate_index() -> None:
+    """Group tuples are sets-as-tuples. Render groups overlap by design, so the
+    broad groups that union them must deduplicate."""
+    for name, indices in T.groups.items():
+        assert len(indices) == len(set(indices)), f"{name} has duplicate indices"
+
+
+def test_broad_groups_are_sorted() -> None:
+    for name, indices in T.groups.items():
+        assert list(indices) == sorted(indices), f"{name} is not in ascending order"
