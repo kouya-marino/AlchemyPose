@@ -125,7 +125,13 @@ assert set(_GROUP_PRIORITY) == set(RENDER_GROUPS.keys()), \
 
 
 def _union(*names: str) -> tuple[int, ...]:
-    return tuple(sorted(i for n in names for i in RENDER_GROUPS[n]))
+    """Merge render groups into a broad one.
+
+    Deduplicating matters: render groups deliberately overlap on anchor joints
+    (a shoulder is in both torso_head and left_arm), so a plain concatenation
+    would repeat those indices.
+    """
+    return tuple(sorted({i for n in names for i in RENDER_GROUPS[n]}))
 
 
 BROAD_GROUPS: dict[str, tuple[int, ...]] = {
