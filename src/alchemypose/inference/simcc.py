@@ -52,7 +52,7 @@ def top_down_affine(
     )
     affine = cv2.getAffineTransform(src, dst).astype(np.float32)
     warped = cv2.warpAffine(image, affine, (in_w, in_h), flags=cv2.INTER_LINEAR)
-    return warped, affine
+    return warped.astype(np.uint8, copy=False), affine
 
 
 def affine_untransform(keypoints: F32, affine: F32) -> F32:
