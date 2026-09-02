@@ -11,6 +11,12 @@ host or its Hugging Face mirror). ``_download`` therefore extracts the single
 ``.onnx`` member from the archive it fetches, so ``ensure()`` always hands
 back a bare ``.onnx`` file and ``ModelSpec.sha256`` is the digest of that
 extracted file, not of the zip.
+
+Nothing here ever writes unverified bytes to the canonical cache path: every
+write — the raw download, the zip extraction, and the final publish in
+``ensure`` — goes to a temp file created up front (so its path is always known
+for cleanup) and is only ever moved into its destination once it is known to
+be complete and, for the canonical path, checksum-verified.
 """
 
 from __future__ import annotations
@@ -134,72 +140,107 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _extract_onnx(archive_path: Path, target: Path) -> None:
-    """Pull the single ``.onnx`` member out of a downloaded zip and move it into place."""
+def _extract_onnx(archive_path: Path, dest: Path) -> None:
+    """Stream the single ``.onnx`` member of ``archive_path`` into ``dest``.
+
+    The member is copied by *content* through ``ZipFile.open`` into a freshly
+    created temp file, never through ``ZipFile.extract``/``extractall`` — so an
+    attacker-controlled entry name (e.g. ``"../../evil.onnx"``, a "zip slip"
+    payload) is never interpreted as a filesystem path and can never write
+    outside ``dest``'s directory. The temp file's path is captured immediately
+    on creation and removed on any failure, so a bad CRC or a disk-full error
+    partway through the copy cannot leave a stray partial file behind.
+    """
     with zipfile.ZipFile(archive_path) as archive:
         onnx_members = [name for name in archive.namelist() if name.endswith(".onnx")]
         if len(onnx_members) != 1:
             raise WeightsError(
                 f"expected exactly one .onnx file in {archive_path.name}, found {len(onnx_members)}: {onnx_members}"
             )
-        with (
-            archive.open(onnx_members[0]) as member,
-            tempfile.NamedTemporaryFile(delete=False, dir=target.parent) as tmp,
-        ):
-            shutil.copyfileobj(member, tmp)
-            temp_path = Path(tmp.name)
-    shutil.move(str(temp_path), target)
+        fd, tmp_name = tempfile.mkstemp(dir=dest.parent)
+        temp_path = Path(tmp_name)
+        try:
+            with archive.open(onnx_members[0]) as member, os.fdopen(fd, "wb") as out:
+                shutil.copyfileobj(member, out)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+    shutil.move(str(temp_path), dest)
 
 
-def _download(url: str, target: Path, progress: Callable[[int, int], None] | None = None) -> None:
-    """Fetch to a temporary file first, so an interrupted download never looks cached.
+def _download(url: str, dest: Path, progress: Callable[[int, int], None] | None = None) -> None:
+    """Fetch (and, for a zip, extract) ``url`` into ``dest``.
 
-    Upstream URLs serve a zip bundling the ``.onnx`` file with other artefacts;
-    when that happens the archive is downloaded to a temporary file and the
-    single ``.onnx`` member is extracted to ``target``, so ``target`` is
-    always a bare ONNX file regardless of how the URL served it.
+    ``dest`` is a fresh temp path chosen by the caller (``ensure``) — this
+    function never writes to the canonical cache filename itself, and it never
+    leaves a partial file behind: the raw download goes to its own temp file,
+    whose path is captured the instant it is created (before any bytes are
+    written) and removed on any failure — a dropped connection mid-download,
+    or a zip that turns out to be malformed — so an interrupted transfer can
+    never orphan a partially written multi-hundred-megabyte file in the cache
+    directory.
     """
     try:
         with urllib.request.urlopen(url) as response:  # noqa: S310 - the URLs are our own constants
             total = int(response.headers.get("Content-Length", 0))
-            done = 0
-            with tempfile.NamedTemporaryFile(delete=False, dir=target.parent) as tmp:
-                while chunk := response.read(_CHUNK):
-                    tmp.write(chunk)
-                    done += len(chunk)
-                    if progress is not None:
-                        progress(done, total)
-                temp_path = Path(tmp.name)
-        if zipfile.is_zipfile(temp_path):
+            fd, raw_name = tempfile.mkstemp(dir=dest.parent)
+            raw_path = Path(raw_name)
             try:
-                _extract_onnx(temp_path, target)
+                done = 0
+                with os.fdopen(fd, "wb") as tmp:
+                    while chunk := response.read(_CHUNK):
+                        tmp.write(chunk)
+                        done += len(chunk)
+                        if progress is not None:
+                            progress(done, total)
+            except BaseException:
+                raw_path.unlink(missing_ok=True)
+                raise
+        if zipfile.is_zipfile(raw_path):
+            try:
+                _extract_onnx(raw_path, dest)
             finally:
-                temp_path.unlink(missing_ok=True)
+                raw_path.unlink(missing_ok=True)
         else:
-            shutil.move(str(temp_path), target)
+            shutil.move(str(raw_path), dest)
     except (urllib.error.URLError, OSError, zipfile.BadZipFile) as exc:
         raise WeightsError(f"could not download {url}: {exc}") from exc
 
 
 def ensure(key: str, *, progress: Callable[[int, int], None] | None = None) -> Path:
-    """Return a verified local path to the model, downloading it at most once."""
+    """Return a verified local path to the model, downloading it at most once.
+
+    The canonical cache path only ever receives verified bytes: the download
+    (and any zip extraction) lands in a temp file first, that temp file is
+    hashed, and only a matching digest gets ``shutil.move``d onto ``target`` —
+    so a concurrent reader of ``target`` can never observe a corrupt or
+    partially written file, and a failed verification leaves ``target``
+    untouched (and cleans up its own temp file) rather than looping.
+    """
     spec = REGISTRY.get(key)
     if spec is None:
         raise WeightsError(f"unknown model {key!r}; known: {sorted(REGISTRY)}")
 
-    target = cache_dir() / spec.filename
+    cache = cache_dir()
+    target = cache / spec.filename
     if target.exists() and _sha256(target) == spec.sha256:
         return target
 
     if target.exists():
         target.unlink()
-    _download(spec.url, target, progress)
 
-    actual = _sha256(target)
-    if actual != spec.sha256:
-        target.unlink(missing_ok=True)
-        raise WeightsError(
-            f"checksum mismatch for {key}: expected {spec.sha256}, got {actual}. "
-            f"The download may be corrupt or the upstream file changed."
-        )
+    fd, temp_name = tempfile.mkstemp(dir=cache, suffix=".part")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        _download(spec.url, temp_path, progress)
+        actual = _sha256(temp_path)
+        if actual != spec.sha256:
+            raise WeightsError(
+                f"checksum mismatch for {key}: expected {spec.sha256}, got {actual}. "
+                f"The download may be corrupt or the upstream file changed."
+            )
+        shutil.move(str(temp_path), target)
+    finally:
+        temp_path.unlink(missing_ok=True)
     return target
