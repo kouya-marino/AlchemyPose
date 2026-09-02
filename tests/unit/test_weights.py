@@ -1,5 +1,7 @@
 import hashlib
 import io
+import os
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -140,6 +142,40 @@ def test_extract_onnx_raises_when_the_archive_has_two_onnx_members(tmp_path: Pat
         weights._extract_onnx(archive, dest)
 
     assert not dest.exists()
+
+
+def test_extract_onnx_closes_the_temp_fd_when_archive_open_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the fd leak: if ``ZipFile.open`` raises (an unsupported
+    compression method, a structurally faulty member) before the raw fd from
+    ``mkstemp`` is wrapped by ``os.fdopen``, that fd must still end up closed
+    rather than leaking for the life of the process.
+    """
+    archive = _make_zip(tmp_path, {"model.onnx": b"payload"})
+    dest = tmp_path / "out.onnx"
+
+    captured_fds: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def spy_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, name = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+        captured_fds.append(fd)
+        return fd, name
+
+    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
+
+    def exploding_open(self: zipfile.ZipFile, *args: object, **kwargs: object) -> object:
+        raise zipfile.BadZipFile("simulated unsupported compression method")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", exploding_open)
+
+    with pytest.raises(zipfile.BadZipFile):
+        weights._extract_onnx(archive, dest)
+
+    assert captured_fds, "mkstemp must have been called"
+    with pytest.raises(OSError):
+        os.fstat(captured_fds[0])  # a closed fd raises EBADF; a leaked one would not
 
 
 def test_extract_onnx_writes_the_exact_bytes_of_a_well_formed_single_member_zip(tmp_path: Path) -> None:

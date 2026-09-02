@@ -21,16 +21,21 @@ def test_person_defaults_leave_the_future_slots_empty() -> None:
 
 
 def test_person_rejects_mismatched_shapes() -> None:
-    with pytest.raises(ValueError, match="scores"):
+    with pytest.raises(ValueError) as exc_info:
         PersonPose(
             keypoints=np.zeros((133, 2), dtype=np.float32),
             scores=np.ones((17,), dtype=np.float32),
         )
+    message = str(exc_info.value)
+    assert "(133,)" in message, f"must name the expected shape derived from keypoints.shape[0]: {message}"
+    assert "(17,)" in message, f"must name the actual shape: {message}"
 
 
 def test_person_rejects_wrong_keypoint_dimensionality() -> None:
-    with pytest.raises(ValueError, match="shape"):
+    with pytest.raises(ValueError) as exc_info:
         PersonPose(keypoints=np.zeros((133, 3), dtype=np.float32), scores=np.ones(133, dtype=np.float32))
+    message = str(exc_info.value)
+    assert "(133, 3)" in message, f"must name the offending keypoints shape: {message}"
 
 
 def test_person_accepts_3d_and_validates_it() -> None:
