@@ -2,40 +2,88 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QSplitter, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QSlider,
+    QSplitter,
+    QStatusBar,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from alchemypose import __version__
 from alchemypose.core.presets import matching_preset, selection_for
-from alchemypose.core.schema import KeypointSelection
+from alchemypose.core.schema import KeypointSelection, PoseResult
+from alchemypose.errors import AlchemyPoseError
 from alchemypose.gui import theme
 from alchemypose.gui.reporting import DialogReporter, Reporter
+from alchemypose.inference.engine import PoseEngine
 
 WINDOW_TITLE = "AlchemyPose"
 WINDOW_GEOMETRY = (1440, 900)
+DEFAULT_CONFIDENCE_THRESHOLD = 0.3
+IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+
+
+def default_engine_factory() -> PoseEngine:
+    """Build the real engine.
+
+    Called by the worker *on its thread*, the first time a job runs. The import
+    lives here too, so that neither onnxruntime's import cost nor the CoreML
+    compile ever lands on the GUI thread or in window construction.
+    """
+    from alchemypose.inference.rtmw import RTMWEngine
+
+    return RTMWEngine(preset="performance")
 
 
 class MainWindow(QMainWindow):
-    """Canvas on the left, presets and the layer tree on the right."""
+    """Canvas on the left, presets and the layer tree on the right.
 
-    def __init__(self, reporter: Reporter | None = None) -> None:
+    ``engine_factory`` exists for tests and for anyone embedding the window
+    with a different model; the default builds RTMW lazily on the worker.
+    """
+
+    def __init__(
+        self,
+        reporter: Reporter | None = None,
+        engine_factory: Callable[[], PoseEngine] | None = None,
+    ) -> None:
         super().__init__()
         self.reporter: Reporter = reporter or DialogReporter()
         self.setWindowTitle(f"{WINDOW_TITLE} ({__version__})")
         self.resize(*WINDOW_GEOMETRY)
         self.setStyleSheet(theme.STYLESHEET)
 
+        from alchemypose.gui.bridge import WorkerBridge
         from alchemypose.gui.canvas.interaction import SelectionController
         from alchemypose.gui.canvas.scene import PoseOverlay
         from alchemypose.gui.canvas.view import PoseCanvas
+        from alchemypose.gui.panels.inspector import Inspector, LegendWidget
         from alchemypose.gui.panels.layers import LayerPanel
         from alchemypose.gui.panels.presets import PresetBar
+
+        self._result: PoseResult | None = None
+        self._pending_source: str | None = None
+        self._person: int | None = None
+        self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
 
         self.canvas = PoseCanvas()
         self.canvas_overlay = PoseOverlay(self.canvas)
         self.presets = PresetBar()
         self.layers = LayerPanel()
+        self.inspector = Inspector()
+        self.legend = LegendWidget()
         self.selection = SelectionController(self.canvas_overlay, self.layers)
 
         side = QWidget()
@@ -43,6 +91,8 @@ class MainWindow(QMainWindow):
         side_layout.setContentsMargins(8, 8, 8, 8)
         side_layout.addWidget(self.presets)
         side_layout.addWidget(self.layers, stretch=1)
+        side_layout.addWidget(self.inspector)
+        side_layout.addWidget(self.legend)
         side.setFixedWidth(280)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -60,16 +110,74 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status)
         self.set_status("Ready.")
 
+        self._build_toolbar()
+
         self.presets.preset_chosen.connect(self._apply_preset)
         self.layers.selection_changed.connect(self._on_selection_changed)
         self.layers.set_selection(selection_for("full_body"))
 
         self.canvas.keypoint_clicked.connect(self._on_keypoint_clicked)
         self.canvas.keypoint_double_clicked.connect(self._on_keypoint_double_clicked)
+        self.canvas_overlay.keypoint_hovered.connect(self._on_keypoint_hovered)
+        self.canvas_overlay.keypoint_left.connect(self.inspector.clear)
 
         QShortcut(QKeySequence("Shift+H"), self, self._solo_current)
         QShortcut(QKeySequence("Alt+H"), self, self.selection.clear)
         QShortcut(QKeySequence("Esc"), self, self.selection.clear)
+
+        # The bridge is the only path from the worker thread to this window:
+        # both connections below are queued, so the slots run here, not there.
+        self._bridge = WorkerBridge(engine_factory or default_engine_factory, parent=self)
+        self._bridge.result_ready.connect(self._on_result)
+        self._bridge.failed.connect(self._on_failed)
+        self._bridge.start()
+
+    # ---------------------------------------------------------------- toolbar
+
+    def _build_toolbar(self) -> None:
+        from alchemypose.gui.panels.people import PersonBar
+
+        toolbar = QToolBar("main", self)
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.addToolBar(toolbar)
+
+        self.open_action = QAction("Open", self)
+        self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.open_action.setToolTip("Open an image (Ctrl+O)")
+        self.open_action.triggered.connect(self._choose_file)
+        toolbar.addAction(self.open_action)
+        toolbar.addSeparator()
+
+        self.people = PersonBar()
+        self.people.person_chosen.connect(self._on_person_chosen)
+        self.people.everyone_chosen.connect(self._on_everyone_chosen)
+        toolbar.addWidget(self.people)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+
+        self._build_confidence_slider(toolbar)
+
+    def _build_confidence_slider(self, toolbar: QToolBar) -> None:
+        caption = QLabel("Confidence ≥ ")
+        caption.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        toolbar.addWidget(caption)
+
+        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.confidence_slider.setRange(0, 100)
+        self.confidence_slider.setValue(round(self._confidence_threshold * 100))
+        self.confidence_slider.setFixedWidth(120)
+        self.confidence_slider.setToolTip("Hide keypoints whose confidence is below this")
+        self.confidence_slider.valueChanged.connect(self._on_slider_moved)
+        toolbar.addWidget(self.confidence_slider)
+
+        self._confidence_label = QLabel(f"{self._confidence_threshold:.2f}")
+        self._confidence_label.setFixedWidth(36)
+        toolbar.addWidget(self._confidence_label)
+
+    # ----------------------------------------------------------------- status
 
     def set_status(self, message: str) -> None:
         self._status.showMessage(message)
@@ -78,13 +186,84 @@ class MainWindow(QMainWindow):
     def status(self) -> str:
         return self._status.currentMessage()
 
+    # ------------------------------------------------------------ open / infer
+
+    def _choose_file(self) -> None:
+        name, _ = QFileDialog.getOpenFileName(self, "Open image", "", IMAGE_FILTER)
+        if name:
+            self.open_image(Path(name))
+
+    def open_image(self, path: Path) -> None:
+        """Show the image immediately, then detect in the background."""
+        from alchemypose.media.image import load_image
+
+        try:
+            image = load_image(path)
+        except AlchemyPoseError as exc:
+            self.reporter.error("Could not open image", str(exc))
+            self.set_status("Could not open that file.")
+            return
+
+        self._result = None
+        self._person = None
+        self._pending_source = str(path)
+        self.people.set_people(0)
+        self.inspector.clear()
+        self.selection.clear()
+
+        self.canvas.set_image(image)
+        self.canvas.fit_to_window()
+        self.set_status(f"{path.name} — detecting ...")
+        self._bridge.submit(image, str(path))
+
+    def _on_result(self, result: PoseResult) -> None:
+        """Runs on the GUI thread, via the bridge's queued connection."""
+        if self._pending_source is not None and result.source != self._pending_source:
+            return  # a straggler for an image we have since replaced
+        if not result.frames:
+            self._on_failed("the engine returned no frames")
+            return
+
+        count = len(result.frames[0].people)
+        self._result = result
+        self._person = None
+        self.people.set_people(count)
+        self.canvas_overlay.set_result(result, self._effective_selection(), self._confidence_threshold)
+        if count:
+            noun = "person" if count == 1 else "people"
+            self.set_status(f"{count} {noun} · {len(result.topology)} keypoints · {result.model}")
+        else:
+            self.set_status("No people detected.")
+
+    def _on_failed(self, message: str) -> None:
+        """Runs on the GUI thread, via the bridge's queued connection."""
+        self.reporter.error("Pose estimation failed", message)
+        self.set_status("Detection failed.")
+
+    # -------------------------------------------------------------- selection
+
+    def _effective_selection(self) -> KeypointSelection:
+        """The tree's selection, narrowed to the chosen person if there is one."""
+        tree = self.layers.current_selection()
+        persons = None if self._person is None else frozenset({self._person})
+        return KeypointSelection(visible=tree.visible, persons=persons)
+
     def _apply_preset(self, name: str) -> None:
         """A chip only ever writes to the tree; the tree tells everyone else."""
         self.layers.set_selection(selection_for(name))
 
     def _on_selection_changed(self, selection: KeypointSelection) -> None:
         self.presets.highlight(matching_preset(selection))
-        self.canvas_overlay.set_selection(selection)
+        self.canvas_overlay.set_selection(self._effective_selection())
+
+    def _on_person_chosen(self, index: int) -> None:
+        self._person = index
+        self.canvas_overlay.set_selection(self._effective_selection())
+        self.set_status(f"Person {index + 1}")
+
+    def _on_everyone_chosen(self) -> None:
+        self._person = None
+        self.canvas_overlay.set_selection(self._effective_selection())
 
     def _on_keypoint_clicked(self, person: int, index: int, group: str) -> None:
         """Click selects: emphasise the group, hide nothing."""
@@ -100,3 +279,44 @@ class MainWindow(QMainWindow):
         """Shift+H: solo whatever is currently emphasised, if anything."""
         if self.selection.emphasised is not None:
             self.selection.solo_group(self.selection.emphasised)
+
+    # -------------------------------------------------------------- inspector
+
+    def _on_keypoint_hovered(self, person: int, index: int, group: str) -> None:
+        if self._result is None:
+            return
+        frame = self._result.frames[0]
+        if not 0 <= person < len(frame.people):
+            return
+        name = self._result.topology.keypoint_names[index]
+        score = float(frame.people[person].scores[index])
+        self.inspector.show_keypoint(name, score, group)
+
+    # ------------------------------------------------------------- confidence
+
+    @property
+    def confidence_threshold(self) -> float:
+        """Keypoints scoring below this are not drawn. The stored result is never touched."""
+        return self._confidence_threshold
+
+    def set_confidence_threshold(self, value: float) -> None:
+        value = min(1.0, max(0.0, value))
+        self._confidence_threshold = value
+        self._confidence_label.setText(f"{value:.2f}")
+        # Keep the slider in step without bouncing back through _on_slider_moved.
+        self.confidence_slider.blockSignals(True)
+        try:
+            self.confidence_slider.setValue(round(value * 100))
+        finally:
+            self.confidence_slider.blockSignals(False)
+        self.canvas_overlay.set_confidence_threshold(value)
+
+    def _on_slider_moved(self, ticks: int) -> None:
+        self.set_confidence_threshold(ticks / 100.0)
+
+    # -------------------------------------------------------------- lifecycle
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Stop the worker before the widgets it would report to disappear."""
+        self._bridge.stop()
+        super().closeEvent(event)
