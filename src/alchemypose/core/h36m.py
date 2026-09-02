@@ -27,6 +27,12 @@ H36M_NAMES: tuple[str, ...] = (
     "right_shoulder", "right_elbow", "right_wrist",
 )
 
+#: Interpolation weight from thorax toward head for the neck joint. H36M's neck sits at the
+#: base of the cervical spine, close to the thorax — not halfway to the head. COCO offers no
+#: neck-base point, so we interpolate a short way from thorax toward nose. A midpoint would
+#: land around chin level; 0.25 is a defensible approximation of the real anatomical offset.
+NECK_FROM_THORAX = 0.25
+
 #: H36M joints that are a straight copy of a COCO joint.
 _DIRECT: dict[str, str] = {
     "right_hip": "right_hip", "right_knee": "right_knee", "right_ankle": "right_ankle",
@@ -74,9 +80,13 @@ def to_h36m17(person: PersonPose) -> tuple[F32, F32]:
     out_kp[H36M_NAMES.index("spine")] = spine_xy
     out_sc[H36M_NAMES.index("spine")] = min(pelvis_s, thorax_s)
 
-    # H36M's "neck" sits between thorax and head; COCO offers nothing closer.
+    # H36M's neck sits at the base of the cervical spine, close to the thorax — not
+    # halfway to the head. COCO offers no neck-base point, so interpolate a short way
+    # from the thorax toward the nose. A midpoint lands around chin level; a quarter is
+    # a defensible approximation of the real offset. Confidence still takes the minimum
+    # of the two parents, since it is derived from both regardless of the weighting.
     nose_i = _C["nose"]
-    neck_xy = ((thorax_xy + kp[nose_i]) / 2.0).astype(np.float32)
+    neck_xy = (thorax_xy * (1.0 - NECK_FROM_THORAX) + kp[nose_i] * NECK_FROM_THORAX).astype(np.float32)
     out_kp[H36M_NAMES.index("neck")] = neck_xy
     out_sc[H36M_NAMES.index("neck")] = min(thorax_s, sc[nose_i])
 
