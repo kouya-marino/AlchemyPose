@@ -1,4 +1,5 @@
 import json
+import logging
 
 import numpy as np
 
@@ -34,8 +35,8 @@ def test_json_round_trip_preserves_keypoints_exactly() -> None:
     restored = from_json(to_json(original))
     a = original.frames[0].people[0]
     b = restored.frames[0].people[0]
-    np.testing.assert_allclose(a.keypoints, b.keypoints, rtol=0, atol=1e-6)
-    np.testing.assert_allclose(a.scores, b.scores, rtol=0, atol=1e-6)
+    np.testing.assert_array_equal(a.keypoints, b.keypoints)
+    np.testing.assert_array_equal(a.scores, b.scores)
 
 
 def test_json_round_trip_preserves_metadata() -> None:
@@ -74,3 +75,34 @@ def test_csv_has_one_row_per_keypoint_per_person_plus_a_header() -> None:
 def test_csv_names_come_from_the_topology() -> None:
     lines = to_csv(_result(n_people=1)).strip().splitlines()
     assert lines[1].split(",")[3] == "nose"
+
+
+def test_non_finite_values_survive_as_null_and_come_back_as_nan() -> None:
+    result = _result()
+    kp = result.frames[0].people[0].keypoints.copy()
+    kp[5] = [np.nan, np.nan]
+    people = (PersonPose(keypoints=kp, scores=result.frames[0].people[0].scores),)
+    frame = PoseFrame(frame_index=0, timestamp_s=None, image_size=(640, 480), people=people)
+    r = PoseResult(topology=COCO_WHOLEBODY_133, frames=(frame,), source="x", model="m")
+    text = to_json(r)
+    assert "NaN" not in text, "bare NaN is not valid JSON"
+    assert json.loads(text) is not None
+    restored = from_json(text)
+    assert np.isnan(restored.frames[0].people[0].keypoints[5]).all()
+
+
+def test_an_unknown_topology_is_rebuilt_from_the_file() -> None:
+    payload = json.loads(to_json(_result()))
+    payload["topology"]["name"] = "some_future_schema"
+    restored = from_json(json.dumps(payload))
+    assert restored.topology.name == "some_future_schema"
+    assert len(restored.topology.keypoint_names) == 133
+
+
+def test_a_known_name_with_a_different_layout_warns(caplog) -> None:  # type: ignore[no-untyped-def]
+    payload = json.loads(to_json(_result()))
+    payload["topology"]["edges"] = [[0, 1]]
+    with caplog.at_level(logging.WARNING):
+        restored = from_json(json.dumps(payload))
+    assert len(restored.topology.edges) == 127, "installed definition wins"
+    assert "different keypoint layout" in caplog.text

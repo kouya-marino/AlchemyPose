@@ -9,25 +9,56 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from alchemypose.core.schema import Camera, PersonPose, PoseFrame, PoseResult, Space
 from alchemypose.core.topology import COCO_WHOLEBODY_133, Topology
 
+_log = logging.getLogger(__name__)
+
 _KNOWN_TOPOLOGIES: dict[str, Topology] = {COCO_WHOLEBODY_133.name: COCO_WHOLEBODY_133}
+
+
+def _encode_array(values: NDArray[np.float32]) -> list[Any]:
+    """Nested lists, with non-finite values as JSON null.
+
+    json.dumps would otherwise emit bare NaN/Infinity tokens, which are not valid
+    JSON and are rejected by strict parsers — the exact portability this format
+    exists to provide.
+    """
+    if values.ndim == 1:
+        return [None if not np.isfinite(v) else float(v) for v in values]
+    elif values.ndim == 2:
+        return [[None if not np.isfinite(v) else float(v) for v in row] for row in values]
+    else:
+        raise ValueError(f"Expected 1-D or 2-D array, got {values.ndim}D")
+
+
+def _decode_array(payload: list[Any], shape_hint: tuple[int, ...]) -> NDArray[np.float32]:
+    """Inverse: JSON null becomes NaN."""
+    if len(shape_hint) == 1:
+        return np.asarray([np.nan if v is None else v for v in payload], dtype=np.float32)
+    elif len(shape_hint) == 2:
+        return np.asarray(
+            [[np.nan if v is None else v for v in row] for row in payload], dtype=np.float32
+        )
+    else:
+        raise ValueError(f"Expected 1-D or 2-D shape, got {shape_hint}")
 
 
 def _person_to_dict(person: PersonPose) -> dict[str, Any]:
     out: dict[str, Any] = {
-        "keypoints": person.keypoints.tolist(),
-        "scores": person.scores.tolist(),
+        "keypoints": _encode_array(person.keypoints),
+        "scores": _encode_array(person.scores),
         "bbox": list(person.bbox) if person.bbox is not None else None,
         "bbox_score": person.bbox_score,
         "track_id": person.track_id,
         "space_2d": person.space_2d.value,
-        "keypoints_3d": person.keypoints_3d.tolist() if person.keypoints_3d is not None else None,
+        "keypoints_3d": _encode_array(person.keypoints_3d) if person.keypoints_3d is not None else None,
         "space_3d": person.space_3d.value if person.space_3d is not None else None,
     }
     return out
@@ -37,12 +68,12 @@ def _person_from_dict(payload: dict[str, Any]) -> PersonPose:
     kp3d = payload.get("keypoints_3d")
     space3d = payload.get("space_3d")
     return PersonPose(
-        keypoints=np.asarray(payload["keypoints"], dtype=np.float32),
-        scores=np.asarray(payload["scores"], dtype=np.float32),
+        keypoints=_decode_array(payload["keypoints"], (len(payload["keypoints"]), 2)),
+        scores=_decode_array(payload["scores"], (len(payload["scores"]),)),
         bbox=tuple(payload["bbox"]) if payload.get("bbox") else None,
         bbox_score=payload.get("bbox_score"),
         track_id=payload.get("track_id"),
-        keypoints_3d=np.asarray(kp3d, dtype=np.float32) if kp3d is not None else None,
+        keypoints_3d=_decode_array(kp3d, (len(kp3d), 3)) if kp3d is not None else None,
         space_2d=Space(payload.get("space_2d", Space.IMAGE_PX.value)),
         space_3d=Space(space3d) if space3d is not None else None,
     )
@@ -77,14 +108,31 @@ def to_json(result: PoseResult) -> str:
             for f in result.frames
         ],
     }
-    return json.dumps(payload, indent=2)
+    return json.dumps(payload, indent=2, allow_nan=False)
 
 
 def from_json(text: str) -> PoseResult:
+    """Parse a PoseResult from JSON, using the installed topology definition if known.
+
+    If the topology name is known in this environment, the installed definition wins
+    (because every index in the rest of the application is interpreted against it).
+    The file's own keypoint names and edges are then silently reinterpreted; if they
+    differ substantially, a warning is logged.
+    """
     payload = json.loads(text)
     name = payload["topology"]["name"]
     topology = _KNOWN_TOPOLOGIES.get(name)
-    if topology is None:
+    if topology is not None:
+        file_edges = tuple(tuple(e) for e in payload["topology"]["edges"])
+        if (tuple(payload["topology"]["keypoint_names"]) != topology.keypoint_names
+                or file_edges != topology.edges):
+            _log.warning(
+                "%s in this file declares a different keypoint layout than the installed "
+                "%s (%d vs %d edges). Using the installed definition; indices may not mean "
+                "what the file intended.",
+                name, name, len(file_edges), len(topology.edges),
+            )
+    else:
         topology = Topology(
             name=name,
             keypoint_names=tuple(payload["topology"]["keypoint_names"]),
