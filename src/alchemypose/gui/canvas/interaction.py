@@ -5,10 +5,11 @@ lost. Soloing (double-click, or ``Shift+H``) hides the rest, which is
 destructive enough that it needs its own gesture and a remembered previous
 state to return to. ``Esc`` / ``Alt+H`` undo a solo and drop the emphasis.
 
-The emphasis fade is applied here rather than through a method on
-``PoseOverlay`` — it only needs the overlay's already-public ``keypoint_items``
-/ ``bone_items`` lists and ``KeypointItem.group_name``, both of which are
-already part of its public surface.
+The emphasis fade goes through ``PoseOverlay.set_emphasis`` rather than being
+painted onto the items from here. The overlay rebuilds every item on any
+selection or threshold change, so a dim written directly onto items would be
+wiped by the very next layer toggle; letting the overlay *record* the emphasis
+means a rebuild reproduces it. One mechanism, not two that disagree.
 
 Soloing never writes to the overlay directly: it goes through
 ``LayerPanel.set_selection`` so the tree stays the single source of truth for
@@ -21,16 +22,6 @@ from alchemypose.core.schema import KeypointSelection
 from alchemypose.core.topology import RENDER_GROUPS
 from alchemypose.gui.canvas.scene import PoseOverlay
 from alchemypose.gui.panels.layers import LayerPanel
-
-DIM_OPACITY = 0.25
-
-
-def _apply_emphasis(overlay: PoseOverlay, group: str | None) -> None:
-    """Fade every group except ``group``. Purely visual — nothing is removed."""
-    for item in overlay.keypoint_items:
-        item.setOpacity(1.0 if group is None or item.group_name == group else DIM_OPACITY)
-    for bone in overlay.bone_items:
-        bone.setOpacity(DIM_OPACITY if group is not None else 1.0)
 
 
 class SelectionController:
@@ -54,7 +45,7 @@ class SelectionController:
     def select_group(self, group: str) -> None:
         """Fade every other group. Nothing is hidden, nothing is remembered."""
         self._emphasised = group
-        _apply_emphasis(self._overlay, group)
+        self._overlay.set_emphasis(group)
 
     def solo_group(self, group: str) -> None:
         """Hide everything else, remembering what to come back to.
@@ -70,7 +61,7 @@ class SelectionController:
         self._emphasised = group
         self._layers.set_selection(KeypointSelection(visible=frozenset(RENDER_GROUPS[group])))
         self._sync_overlay_from_layers()
-        _apply_emphasis(self._overlay, None)
+        self._overlay.set_emphasis(None)
 
     def clear(self) -> None:
         """Esc / Alt+H: drop the emphasis and undo any solo."""
@@ -80,7 +71,7 @@ class SelectionController:
             self._sync_overlay_from_layers()
         self._soloed = None
         self._emphasised = None
-        _apply_emphasis(self._overlay, None)
+        self._overlay.set_emphasis(None)
 
     def _sync_overlay_from_layers(self) -> None:
         """Push the tree's own resulting state to the overlay.

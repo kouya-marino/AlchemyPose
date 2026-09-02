@@ -4,6 +4,7 @@ import pytest
 from alchemypose.core.presets import selection_for
 from alchemypose.core.schema import PersonPose, PoseFrame, PoseResult
 from alchemypose.core.topology import COCO_WHOLEBODY_133, RENDER_GROUPS
+from alchemypose.gui.canvas.scene import DIM_FACTOR
 
 pytestmark = pytest.mark.gui
 
@@ -65,8 +66,33 @@ def test_select_dims_items_outside_the_group(rig) -> None:  # type: ignore[no-un
     controller, overlay, _ = rig
     controller.select_group("left_hand")
     for item in overlay.keypoint_items:
-        expected = 1.0 if item.group_name == "left_hand" else pytest.approx(0.25)
+        expected = 1.0 if item.group_name == "left_hand" else pytest.approx(DIM_FACTOR)
         assert item.opacity() == expected
+
+
+def test_emphasis_survives_a_rebuild_triggered_by_the_layer_tree(rig) -> None:  # type: ignore[no-untyped-def]
+    """The property the overlay-side composition exists to guarantee: a layer
+    toggle (which rebuilds every item) must not silently drop the user's dim."""
+    controller, overlay, _ = rig
+    controller.select_group("left_hand")
+
+    overlay.set_selection(selection_for("all"))            # what LayerPanel fires on a toggle
+    overlay.set_confidence_threshold(0.5)                  # and what the threshold slider fires
+
+    assert overlay.keypoint_item_count == 133, "rebuild must have actually happened"
+    for item in overlay.keypoint_items:
+        expected = 1.0 if item.group_name == "left_hand" else pytest.approx(DIM_FACTOR)
+        assert item.opacity() == expected
+    for bone in overlay.bone_items:
+        assert bone.opacity() == pytest.approx(DIM_FACTOR)
+
+
+def test_clear_after_a_rebuild_restores_full_opacity(rig) -> None:  # type: ignore[no-untyped-def]
+    controller, overlay, _ = rig
+    controller.select_group("left_hand")
+    overlay.set_selection(selection_for("all"))
+    controller.clear()
+    assert all(i.opacity() == pytest.approx(1.0) for i in overlay.keypoint_items)
 
 
 def test_solo_hides_every_other_group(rig) -> None:  # type: ignore[no-untyped-def]

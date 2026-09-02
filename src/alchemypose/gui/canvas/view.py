@@ -34,6 +34,15 @@ class PoseCanvas(QGraphicsView):
     keypoint_clicked = Signal(int, int, str)          # person_index, keypoint_index, group
     keypoint_double_clicked = Signal(int, int, str)
 
+    #: Emitted immediately *before* the scene is wiped in ``set_image``.
+    #:
+    #: ``QGraphicsScene.clear()`` deletes every item at the C++ level on the
+    #: spot, so anything else that caches item references — ``PoseOverlay``
+    #: does — must drop them *now*, without calling ``removeItem`` (the scene
+    #: is about to do that itself; doing both is a double-free). Receivers
+    #: only forget their bookkeeping; they must not touch the scene.
+    scene_cleared = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self._scene = QGraphicsScene(self)
@@ -54,7 +63,12 @@ class PoseCanvas(QGraphicsView):
     # ------------------------------------------------------------------ image
 
     def set_image(self, bgr: NDArray[np.uint8]) -> None:
-        """Show a new image, discarding whatever was there."""
+        """Show a new image, discarding whatever was there.
+
+        Anything drawn over the previous image goes with it — a skeleton that
+        belongs to one photograph must not float over the next one.
+        """
+        self.scene_cleared.emit()
         self._scene.clear()
         self._pixmap_item = None
 

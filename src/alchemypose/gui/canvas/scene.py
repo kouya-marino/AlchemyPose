@@ -3,12 +3,18 @@
 Rebuilding from scratch on every change is deliberate: a few thousand items is
 well inside Graphics View's range, and SLEAP — a PySide pose GUI — clears and
 rebuilds its scene every video frame. Simplicity beats a diffing algorithm here.
+
+Because everything is rebuilt, every *visual* state an item can be in must be
+reproducible from the overlay's own fields: confidence fades from the result and
+threshold, emphasis dimming from ``_emphasis``. An item's opacity is always
+``_target_opacity(item)`` — nothing sets it to an ad-hoc value that a rebuild
+would then forget.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, QVariantAnimation, Signal
 
 from alchemypose.core.schema import KeypointSelection, PoseResult
 from alchemypose.gui import theme
@@ -17,6 +23,45 @@ from alchemypose.gui.canvas.view import PoseCanvas
 
 DASH_BELOW = 0.5
 """A bone whose endpoint confidence falls under this is drawn dashed."""
+
+FULL_OPACITY_ABOVE = 0.8
+"""Scores at or above this draw fully opaque; below it the item fades towards the threshold."""
+
+MIN_OPACITY = 0.35
+"""The faintest a keypoint that survived the threshold is allowed to get."""
+
+DIM_FACTOR = 0.25
+"""Multiplier applied to every item outside the emphasised group."""
+
+#: Draw-in stage per render group: torso first, then limbs, feet, hands; face last.
+ANIMATION_STAGE: dict[str, int] = {
+    "torso_head": 0,
+    "left_arm": 1,
+    "right_arm": 1,
+    "left_leg": 1,
+    "right_leg": 1,
+    "left_foot": 2,
+    "right_foot": 2,
+    "left_hand": 3,
+    "right_hand": 3,
+}
+_LAST_STAGE = 4
+_STAGE_COUNT = _LAST_STAGE + 1
+
+
+def confidence_opacity(score: float, threshold: float) -> float:
+    """Fade a keypoint towards the threshold, so uncertainty is *shown*, not hidden.
+
+    Pure and Qt-free on purpose. ``1.0`` at or above ``FULL_OPACITY_ABOVE``;
+    linear down to ``MIN_OPACITY`` at the threshold; never below ``MIN_OPACITY``
+    (a score under the threshold is not drawn at all, so it never gets here in
+    practice, but the function still returns something sane if it does).
+    """
+    if score >= FULL_OPACITY_ABOVE:
+        return 1.0
+    span = max(FULL_OPACITY_ABOVE - threshold, 1e-6)
+    fraction = min(1.0, max(0.0, (score - threshold) / span))
+    return MIN_OPACITY + fraction * (1.0 - MIN_OPACITY)
 
 
 class PoseOverlay(QObject):
@@ -28,6 +73,12 @@ class PoseOverlay(QObject):
     with it cleanly), so its hover events are routed here through a plain
     callback and re-emitted as ``keypoint_hovered`` / ``keypoint_left``. Task 20
     connects these to the inspector panel.
+
+    The canvas owns the scene and wipes it whenever a new image is shown; the
+    overlay caches references to items *in* that scene. Neither is wrong, but
+    ``QGraphicsScene.clear()`` destroys items at the C++ level immediately, so
+    the overlay listens to ``PoseCanvas.scene_cleared`` and forgets its
+    references before they dangle — see ``_forget_items``.
     """
 
     keypoint_hovered = Signal(int, int, str)   # person_index, keypoint_index, group
@@ -39,8 +90,17 @@ class PoseOverlay(QObject):
         self._result: PoseResult | None = None
         self._selection = KeypointSelection(visible=frozenset())
         self._threshold = 0.3
+        self._emphasis: str | None = None
         self.keypoint_items: list[KeypointItem] = []
         self.bone_items: list[BoneItem] = []
+        #: Confidence-derived opacity per live item, keyed by ``id(item)``.
+        #: Bones carry no score of their own, and ``KeypointItem`` only bakes
+        #: its score into a tooltip, so the overlay keeps it here. Ids are only
+        #: stable while an item is alive, which is exactly as long as it is in
+        #: one of the two lists above — the three are always cleared together.
+        self._confidence: dict[int, float] = {}
+        self._animation: QVariantAnimation | None = None
+        canvas.scene_cleared.connect(self._forget_items)
 
     # ----------------------------------------------------------------- counts
 
@@ -55,6 +115,11 @@ class PoseOverlay(QObject):
     @property
     def visible_item_count(self) -> int:
         return self.keypoint_item_count + self.bone_item_count
+
+    @property
+    def emphasis(self) -> str | None:
+        """The render group currently emphasised, or ``None`` for no dimming."""
+        return self._emphasis
 
     # ------------------------------------------------------------------ state
 
@@ -74,14 +139,58 @@ class PoseOverlay(QObject):
         self._threshold = value
         self._rebuild()
 
+    def set_emphasis(self, group: str | None) -> None:
+        """Dim every group except ``group``; ``None`` restores everything.
+
+        Recorded, not just applied: a later rebuild reproduces it, so toggling a
+        layer no longer silently undoes the user's selection. Existing items are
+        re-shaded in place — no rebuild, item identities are preserved.
+        """
+        self._emphasis = group
+        self._apply_opacities()
+
+    def set_image_dimmed(self, dimmed: bool) -> None:
+        """Push the photograph back so the skeleton reads as the subject.
+
+        Touches only the pixmap. Skeleton opacity is owned by
+        ``_target_opacity`` and is not consulted here.
+        """
+        item = self._canvas.image_item
+        if item is not None:
+            item.setOpacity(theme.DIMMED_IMAGE_OPACITY if dimmed else 1.0)
+
     # ------------------------------------------------------------------ build
 
+    def _forget_items(self) -> None:
+        """Drop every cached item reference *without* touching the scene.
+
+        Connected to ``PoseCanvas.scene_cleared``, which fires just before
+        ``QGraphicsScene.clear()``. The scene is about to delete the items
+        itself; calling ``removeItem`` on them here as well would be a
+        double-free, and calling it a moment later would hit already-deleted
+        C++ objects. Harmless when there is nothing to forget.
+
+        The result goes too: it belongs to the photograph that was just
+        replaced. Keeping it would let a layer toggle, arriving before the new
+        image's inference does, redraw the *old* skeleton over the *new* photo —
+        plausible-looking and completely wrong. Drawing nothing is the honest
+        answer until ``set_result`` is called again.
+        """
+        self._stop_animation()
+        self._result = None
+        self.keypoint_items.clear()
+        self.bone_items.clear()
+        self._confidence.clear()
+
     def _clear(self) -> None:
+        """Remove our items from a scene that is *not* being wiped."""
+        self._stop_animation()
         scene = self._canvas.scene()
         for item in (*self.keypoint_items, *self.bone_items):
             scene.removeItem(item)
         self.keypoint_items.clear()
         self.bone_items.clear()
+        self._confidence.clear()
 
     def _rebuild(self) -> None:
         self._clear()
@@ -104,33 +213,113 @@ class PoseOverlay(QObject):
                     continue
                 pa = QPointF(float(person.keypoints[a][0]), float(person.keypoints[a][1]))
                 pb = QPointF(float(person.keypoints[b][0]), float(person.keypoints[b][1]))
+                weakest = min(float(person.scores[a]), float(person.scores[b]))
                 bone = BoneItem(
                     pa,
                     pb,
                     theme.color_for(topology.group_of(a) or ""),
                     theme.color_for(topology.group_of(b) or ""),
-                    confident=min(float(person.scores[a]), float(person.scores[b])) >= DASH_BELOW,
+                    confident=weakest >= DASH_BELOW,
                 )
                 scene.addItem(bone)
                 self.bone_items.append(bone)
+                self._confidence[id(bone)] = confidence_opacity(weakest, self._threshold)
+                bone.setOpacity(self._target_opacity(bone))
 
             for i in range(len(person)):
                 if not drawable(i):
                     continue
                 group_name = topology.group_of(i) or ""
+                score = float(person.scores[i])
                 item = KeypointItem(
                     person_index=person_index,
                     keypoint_index=i,
                     group_name=group_name,
                     name=topology.keypoint_names[i],
                     color=theme.color_for(group_name),
-                    score=float(person.scores[i]),
+                    score=score,
                     on_hover_enter=self._on_keypoint_hover_enter,
                     on_hover_leave=self._on_keypoint_hover_leave,
                 )
                 item.setPos(float(person.keypoints[i][0]), float(person.keypoints[i][1]))
                 scene.addItem(item)
                 self.keypoint_items.append(item)
+                self._confidence[id(item)] = confidence_opacity(score, self._threshold)
+                item.setOpacity(self._target_opacity(item))
+
+    # --------------------------------------------------------------- opacity
+
+    def _emphasis_factor(self, item: KeypointItem | BoneItem) -> float:
+        """``DIM_FACTOR`` for anything outside the emphasised group.
+
+        A bone spans two joints and carries no group of its own, so when a
+        group is emphasised every bone dims — matching what
+        ``SelectionController`` has always done.
+        """
+        if self._emphasis is None:
+            return 1.0
+        if isinstance(item, KeypointItem) and item.group_name == self._emphasis:
+            return 1.0
+        return DIM_FACTOR
+
+    def _target_opacity(self, item: KeypointItem | BoneItem) -> float:
+        """The opacity ``item`` *should* have right now: confidence × emphasis."""
+        return self._confidence.get(id(item), 1.0) * self._emphasis_factor(item)
+
+    def _apply_opacities(self) -> None:
+        for item in self.keypoint_items:
+            item.setOpacity(self._target_opacity(item))
+        for bone in self.bone_items:
+            bone.setOpacity(self._target_opacity(bone))
+
+    # ------------------------------------------------------------- animation
+
+    def animate_in(self, duration_ms: int = 400) -> None:
+        """Stagger the skeleton into view: torso, then limbs, feet, hands, face.
+
+        Costs nothing at runtime and is most of why a screenshot looks designed.
+        Every item lands on its *own* target opacity — a marginal keypoint fades
+        in to its faded value, not to 1.0 — and targets are read live, so an
+        emphasis change mid-flight is honoured rather than overwritten.
+        """
+        self._stop_animation()
+        for item in (*self.keypoint_items, *self.bone_items):
+            item.setOpacity(0.0)
+
+        animation = QVariantAnimation(self)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setDuration(duration_ms)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.valueChanged.connect(self._on_animation_tick)
+        animation.finished.connect(self._on_animation_finished)
+        # Keep a reference: with only Qt's parent link, Python may collect the
+        # wrapper (and its connected slots) mid-flight and the animation
+        # silently never visibly runs.
+        self._animation = animation
+        animation.start()
+
+    def _on_animation_tick(self, progress: float) -> None:
+        # Start/end values are Python floats, so the QVariant unwraps to one.
+        for item in self.keypoint_items:
+            stage = ANIMATION_STAGE.get(item.group_name, _LAST_STAGE)
+            local = min(1.0, max(0.0, progress * _STAGE_COUNT - stage))
+            item.setOpacity(self._target_opacity(item) * local)
+        for bone in self.bone_items:
+            bone.setOpacity(self._target_opacity(bone) * progress)
+
+    def _on_animation_finished(self) -> None:
+        self._animation = None
+        self._apply_opacities()
+
+    def _stop_animation(self) -> None:
+        """Abandon a running draw-in; the caller will set final opacities itself."""
+        animation, self._animation = self._animation, None
+        if animation is not None:
+            animation.valueChanged.disconnect(self._on_animation_tick)
+            animation.finished.disconnect(self._on_animation_finished)
+            animation.stop()
+            animation.deleteLater()
 
     # ----------------------------------------------------------------- hover
 
