@@ -35,9 +35,15 @@ _IMAGENET_MEAN_RGB: F32 = np.array([123.675, 116.28, 103.53], dtype=np.float32)
 _IMAGENET_STD_RGB: F32 = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 
 
-def _preprocess(warped: NDArray[np.uint8]) -> F32:
-    """BGR uint8 crop -> a normalised RGB CHW batch-of-one float32 blob."""
-    rgb = warped[:, :, ::-1].astype(np.float32)
+def normalise_crop(bgr: NDArray[np.uint8]) -> F32:
+    """BGR uint8 crop (HWC, as OpenCV hands it over) -> normalised RGB NCHW float32 blob.
+
+    Pure pixel arithmetic, deliberately kept out of :class:`RTMWEngine` so it can be
+    unit-tested without loading any ONNX weights. Output is ``(1, 3, H, W)``,
+    C-contiguous, with channel 0 = red. The BGR -> RGB reversal happens *before*
+    the mean/std subtraction, so the RGB-ordered constants land on the right channels.
+    """
+    rgb = bgr[:, :, ::-1].astype(np.float32)
     normalised = (rgb - _IMAGENET_MEAN_RGB) / _IMAGENET_STD_RGB
     return np.ascontiguousarray(normalised.transpose(2, 0, 1)[None].astype(np.float32))
 
@@ -66,7 +72,7 @@ class RTMWEngine:
 
         for bbox, bbox_score in self._detector.detect(image):
             warped, affine = top_down_affine(bbox, self._pose_spec.input_size, image)
-            blob = _preprocess(warped)
+            blob = normalise_crop(warped)
             simcc_x, simcc_y = self._pose.run(None, {self._pose_input: blob})
 
             kp_model, scores = decode_simcc(simcc_x, simcc_y)
