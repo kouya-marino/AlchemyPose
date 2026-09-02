@@ -42,6 +42,20 @@ def selection_for(preset: str) -> KeypointSelection:
     return selection_from_groups(PRESETS[preset])
 
 
+# matching_preset (below) returns the first exact match in dict order, so two
+# presets resolving to the same visible set would make the second one
+# unreachable and the UI would silently light up the wrong chip. Nothing in
+# PRESETS collides today, but a future preset added without checking this
+# could collide silently at runtime instead of loudly at import time — so
+# assert distinctness once, here, over the (cheap: nine small sets) set of
+# all presets.
+_visible_sets = [selection_for(name).visible for name in PRESETS]
+assert len(_visible_sets) == len(set(_visible_sets)), (
+    "PRESETS must all resolve to distinct visible sets: matching_preset picks the first "
+    "exact match in dict order, so a collision would silently hide one preset behind another"
+)
+
+
 def matching_preset(selection: KeypointSelection) -> str | None:
     """The preset this selection exactly equals, if any.
 

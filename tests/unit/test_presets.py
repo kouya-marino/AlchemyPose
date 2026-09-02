@@ -51,3 +51,14 @@ def test_selection_from_groups_unions_the_indices() -> None:
     sel = selection_from_groups(["left_hand", "right_leg"])
     expected = set(COCO_WHOLEBODY_133.groups["left_hand"]) | set(COCO_WHOLEBODY_133.groups["right_leg"])
     assert sel.visible == frozenset(expected)
+
+
+def test_selection_from_groups_deduplicates_overlapping_groups() -> None:
+    """Render groups share anchor joints by design; the union must not double-count."""
+    from alchemypose.core.topology import RENDER_GROUPS
+
+    a, b = set(RENDER_GROUPS["torso_head"]), set(RENDER_GROUPS["left_arm"])
+    assert a & b, "precondition: these groups must actually overlap"
+    sel = selection_from_groups(["torso_head", "left_arm"])
+    assert sel.visible == frozenset(a | b)
+    assert len(sel.visible) == len(a | b) < len(a) + len(b)

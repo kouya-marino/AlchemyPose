@@ -160,7 +160,13 @@ def _extract_onnx(archive_path: Path, dest: Path) -> None:
         fd, tmp_name = tempfile.mkstemp(dir=dest.parent)
         temp_path = Path(tmp_name)
         try:
-            with archive.open(onnx_members[0]) as member, os.fdopen(fd, "wb") as out:
+            # os.fdopen(fd, ...) must come first in this "with", not archive.open().
+            # A compound "with a, b" evaluates left to right, so if archive.open()
+            # raised first, the raw fd from mkstemp would never be wrapped or
+            # closed and would leak for the life of the process (the temp file
+            # itself is still unlinked below, but that doesn't close the fd).
+            # Wrapping the fd first guarantees it is always closed on the way out.
+            with os.fdopen(fd, "wb") as out, archive.open(onnx_members[0]) as member:
                 shutil.copyfileobj(member, out)
         except BaseException:
             temp_path.unlink(missing_ok=True)
