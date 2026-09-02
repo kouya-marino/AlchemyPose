@@ -8,14 +8,13 @@ version = "0.1.0"
 description = "Whole-body human pose visualisation — a typed Python library and desktop application."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 authors = [{name = "Prashant Rawat"}]
 keywords = ["pose-estimation", "keypoints", "rtmpose", "onnx", "computer-vision"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Typing :: Typed",
@@ -52,14 +51,14 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 packages = ["alchemypose"]
 mypy_path = "src"
 disallow_untyped_defs = true
