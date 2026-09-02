@@ -11,9 +11,15 @@ selection or threshold change, so a dim written directly onto items would be
 wiped by the very next layer toggle; letting the overlay *record* the emphasis
 means a rebuild reproduces it. One mechanism, not two that disagree.
 
-Soloing never writes to the overlay directly: it goes through
-``LayerPanel.set_selection`` so the tree stays the single source of truth for
-what is visible, exactly as every other visibility change in this app does.
+Visibility is the other half, and it is deliberately *not* symmetrical with
+emphasis: soloing never touches the overlay's selection. It writes to
+``LayerPanel.set_selection`` and stops there. The tree emits
+``selection_changed``, and whoever owns the window turns that into the
+overlay's selection — which is the only place that knows the rest of the
+picture, most importantly which person the chips have narrowed the view to.
+A push from here would have to guess at that narrowing, and guessing "no
+narrowing" silently puts everybody back on screen while the chip still claims
+one person. So: emphasis is ours to push, visibility is the tree's to announce.
 """
 
 from __future__ import annotations
@@ -60,7 +66,6 @@ class SelectionController:
         self._soloed = group
         self._emphasised = group
         self._layers.set_selection(KeypointSelection(visible=frozenset(RENDER_GROUPS[group])))
-        self._sync_overlay_from_layers()
         self._overlay.set_emphasis(None)
 
     def clear(self) -> None:
@@ -68,17 +73,6 @@ class SelectionController:
         if self._before_solo is not None:
             self._layers.set_selection(self._before_solo)
             self._before_solo = None
-            self._sync_overlay_from_layers()
         self._soloed = None
         self._emphasised = None
         self._overlay.set_emphasis(None)
-
-    def _sync_overlay_from_layers(self) -> None:
-        """Push the tree's own resulting state to the overlay.
-
-        Always read back through ``LayerPanel.current_selection()`` rather than
-        forwarding the value that was just written — the tree stays the single
-        source of truth for what is visible, and the overlay only ever mirrors
-        it, never diverges from it.
-        """
-        self._overlay.set_selection(self._layers.current_selection())

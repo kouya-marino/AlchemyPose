@@ -1,8 +1,13 @@
 # src/alchemypose/inference/detector.py
 """YOLOX person detection — the top-down pipeline's first stage.
 
-Runs on the CPU execution provider, always: see ``session.py`` for why CoreML
-cannot load this graph.
+Runs on the CPU execution provider, always. CoreML is not blocked from
+loading this graph — it loads it, then fails the first ``run()`` inside the
+partition holding the baked-in NMS described below; ``session.py`` carries the
+error text and the measurements. ``make_session`` would catch that and fall
+back on its own, but only after spending 1.8 s (``yolox_nano``) to 6.5 s
+(``yolox_s``) building a CoreML session it then discards, so this stage asks
+for CPU up front and opens the same file in 8-12 ms.
 
 **The exported graph is not the raw regression head a first guess would
 assume.** Loading ``yolox_nano``/``yolox_tiny``/``yolox_s`` with ``onnx.load``
@@ -93,7 +98,7 @@ def nms(boxes: F32, scores: F32, iou_threshold: float) -> list[int]:
 
 
 class YoloxDetector:
-    """Detects people. Always CPU — the CoreML provider cannot load this graph."""
+    """Detects people. Always CPU — CoreML compiles this graph but cannot execute it."""
 
     def __init__(self, model_path: Path, input_size: int = 640, score_threshold: float = 0.3) -> None:
         self._session = make_session(model_path, prefer_coreml=False)

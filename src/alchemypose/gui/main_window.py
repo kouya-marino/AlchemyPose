@@ -248,22 +248,40 @@ class MainWindow(QMainWindow):
         persons = None if self._person is None else frozenset({self._person})
         return KeypointSelection(visible=tree.visible, persons=persons)
 
+    def _push_selection(self) -> None:
+        """Send what should be drawn to the canvas.
+
+        The only writer of ``canvas_overlay.set_selection`` in the app. The two
+        halves of "what is drawn" live in different places — which groups in the
+        tree, which person in the chips — and only this method sees both, so
+        anything that changes either half calls this rather than writing to the
+        overlay itself. A second writer would inevitably know about one half and
+        quietly reset the other.
+        """
+        self.canvas_overlay.set_selection(self._effective_selection())
+
     def _apply_preset(self, name: str) -> None:
         """A chip only ever writes to the tree; the tree tells everyone else."""
         self.layers.set_selection(selection_for(name))
 
     def _on_selection_changed(self, selection: KeypointSelection) -> None:
+        """Every group change lands here, whoever made it.
+
+        Presets, the user's own checkboxes and ``SelectionController``'s solo
+        all write to the tree and let it announce the result, so the person
+        filter is re-applied on top of every one of them.
+        """
         self.presets.highlight(matching_preset(selection))
-        self.canvas_overlay.set_selection(self._effective_selection())
+        self._push_selection()
 
     def _on_person_chosen(self, index: int) -> None:
         self._person = index
-        self.canvas_overlay.set_selection(self._effective_selection())
+        self._push_selection()
         self.set_status(f"Person {index + 1}")
 
     def _on_everyone_chosen(self) -> None:
         self._person = None
-        self.canvas_overlay.set_selection(self._effective_selection())
+        self._push_selection()
 
     def _on_keypoint_clicked(self, person: int, index: int, group: str) -> None:
         """Click selects: emphasise the group, hide nothing."""
