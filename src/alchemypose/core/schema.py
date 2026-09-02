@@ -47,7 +47,23 @@ class Camera:
 
 @dataclass(frozen=True)
 class PersonPose:
-    """One detected person. ``keypoints`` is always the full topology, never a subset."""
+    """One detected person. ``keypoints`` is always the full topology, never a subset.
+
+    ``scores`` is one confidence per keypoint, ``float32`` in ``[0.0, 1.0]``:
+
+    * ``1.0`` — the model's SimCC peak for that joint is at least as tall as its
+      training target for a fully visible keypoint. ``0.0`` — no peak at all; the
+      keypoint's position is then meaningless and must not be drawn or used.
+    * It is a heuristic confidence, not a calibrated probability: monotone in the
+      raw peak height, and comparable across the shipped models only because the
+      engine divides each raw peak by its model's ``inference.rtmw.PEAK_SCALE``
+      (RTMW-l emits logits about 10x taller than RTMW-m / DWPose-l for the same
+      certainty). Filter on it directly — the GUI's threshold slider and rtmlib's
+      ``kpt_thr`` of 0.3-0.5 mean the same thing here. ``inference/simcc.py``
+      explains the derivation.
+    * Consumers may assume the range but not calibration: 0.6 means "more
+      confident than 0.4", never "60 % likely to be within some radius".
+    """
 
     keypoints: F32                     # (K, 2)
     scores: F32                        # (K,)

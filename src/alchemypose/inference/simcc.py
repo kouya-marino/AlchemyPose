@@ -1,9 +1,23 @@
 """Top-down cropping and SimCC decoding for the RTMPose family.
 
-RTMPose predicts, per keypoint, two 1-D probability vectors — one along x, one
-along y — at ``simcc_split_ratio`` times the input resolution. Decoding is
-therefore an argmax per axis, divided by that ratio. This is the whole trick;
-it is why the models are fast.
+RTMPose predicts, per keypoint, two 1-D vectors of *logits* — one along x, one
+along y — at ``simcc_split_ratio`` times the input resolution. Locating a
+keypoint is therefore an argmax per axis, divided by that ratio. This is the
+whole trick; it is why the models are fast.
+
+**The peak height is not a probability.** Every model in the family is trained
+with MMPose's ``KLDiscretLoss``: ``log_softmax(pred * beta)`` against
+``softmax(target * label_beta)``, the target being a unit-height Gaussian.
+Softmax is shift-invariant and only each row's *shape* is supervised, so the
+raw peak of a confidently placed keypoint converges to roughly
+``label_beta / beta`` — about 1.0 for the ``beta=10`` body / DWPose configs
+and about 10 for the ``beta=1, label_beta=10`` RTMW configs. Measured on the
+same photographs, peaks reach 1.03 (RTMW-m), 1.01 (DWPose-l) and 8.6 (RTMW-l).
+Neither MMPose's ``get_simcc_maximum`` nor rtmlib's normalises this value, so
+a fixed 0..1 threshold on the raw peak is meaningless across models — on
+RTMW-l it hides nothing at all. ``decode_simcc`` therefore divides by a
+per-model ``peak_scale`` (see ``rtmw.PEAK_SCALE``) and clips, so the
+confidence it returns means the same thing whichever model produced it.
 """
 
 from __future__ import annotations
@@ -64,21 +78,39 @@ def affine_untransform(keypoints: F32, affine: F32) -> F32:
     return (homogeneous @ inverse.T).astype(np.float32).reshape(shape)
 
 
-def decode_simcc(simcc_x: F32, simcc_y: F32, simcc_split_ratio: float = 2.0) -> tuple[F32, F32]:
-    """Argmax the two 1-D distributions into ``(keypoints (N, K, 2), scores (N, K))``.
+def decode_simcc(
+    simcc_x: F32, simcc_y: F32, simcc_split_ratio: float = 2.0, *, peak_scale: float = 1.0
+) -> tuple[F32, F32]:
+    """Argmax the two 1-D logit vectors into ``(keypoints (N, K, 2), confidence (N, K))``.
 
-    Coordinates are in model-input pixels. A keypoint whose peak is non-positive
-    is reported with zero confidence rather than a plausible-looking location.
+    Coordinates are in model-input pixels. The confidence is MMPose's score —
+    the smaller of the two axis peaks, exactly ``get_simcc_maximum`` — divided
+    by ``peak_scale`` and clipped to ``[0, 1]``:
+
+    * ``1.0`` — a peak at least as tall as the training target for a fully
+      visible keypoint (rows can overshoot a little; RTMW-m reaches 1.05 raw).
+    * ``0.0`` — no peak at all. A non-positive maximum is reported with zero
+      confidence and a zeroed location rather than a plausible-looking one.
+    * In between — a monotone, model-independent heuristic. It is *not* a
+      calibrated probability; nothing in the training objective makes it one.
+
+    ``peak_scale`` is the raw height a confident peak reaches for *this* model
+    (``label_beta / beta`` of its loss, verified against real output — see the
+    module docstring and ``rtmw.PEAK_SCALE``). It only rescales confidence; it
+    never moves a keypoint. The default of ``1.0`` is right for the ``beta=10``
+    majority of the family and leaves a unit peak at full confidence.
     """
+    if peak_scale <= 0.0:
+        raise ValueError(f"peak_scale must be positive, got {peak_scale}")
+
     x_locs = np.argmax(simcc_x, axis=2)
     y_locs = np.argmax(simcc_y, axis=2)
     max_x = np.amax(simcc_x, axis=2)
     max_y = np.amax(simcc_y, axis=2)
 
     keypoints = np.stack([x_locs, y_locs], axis=-1).astype(np.float32) / simcc_split_ratio
-    scores = np.minimum(max_x, max_y).astype(np.float32)
+    raw_peak = np.minimum(max_x, max_y)
+    scores = np.clip(raw_peak / peak_scale, 0.0, 1.0).astype(np.float32)
 
-    invalid = scores <= 0.0
-    scores[invalid] = 0.0
-    keypoints[invalid] = 0.0
+    keypoints[raw_peak <= 0.0] = 0.0
     return keypoints, scores
