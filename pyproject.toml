@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alchemypose"
+version = "0.1.0"
+description = "Whole-body human pose visualisation — a typed Python library and desktop application."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11,<3.13"
+authors = [{name = "Prashant Rawat"}]
+keywords = ["pose-estimation", "keypoints", "rtmpose", "onnx", "computer-vision"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24,<3",
+    "opencv-python-headless>=4.9,<6",
+    "onnxruntime>=1.20,<2",
+    "platformdirs>=4.0",
+    "typer>=0.12,<1",
+    "PySide6_Essentials>=6.8,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-qt>=4.4", "ruff>=0.6", "mypy>=1.11", "build>=1.0", "twine>=5.0"]
+threed = ["pyqtgraph>=0.13", "PyOpenGL>=3.1"]
+
+[project.scripts]
+alchemypose = "alchemypose.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["alchemypose*"]
+
+[tool.setuptools.package-data]
+alchemypose = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "models: requires cached ONNX weights (skipped when absent)",
+    "gui: needs a display; run with QT_QPA_PLATFORM=offscreen",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["alchemypose"]
+mypy_path = "src"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["cv2.*", "onnxruntime.*", "pyqtgraph.*"]
+ignore_missing_imports = true
