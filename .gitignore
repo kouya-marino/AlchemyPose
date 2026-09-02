@@ -1,0 +1,80 @@
+# ─── Model weights ───────────────────────────────────────────────────────────
+# Resolved at runtime into ~/Library/Caches/alchemypose/ (or ALCHEMYPOSE_MODEL_DIR).
+# The performance preset alone is ~236 MB; none of it belongs in the repository
+# or the wheel.
+*.onnx
+*.pt
+*.task
+onnx/
+models/
+
+# ─── Local scratch ───────────────────────────────────────────────────────────
+# Working images, throwaway outputs and anything else that is mine rather than
+# the project's. Photographs of identifiable people live here, never in the
+# repository: under APPI (Japan) and GDPR they are personal data, and a pose
+# estimator's test material is full of them.
+_local/
+*.npy
+*.npz
+
+# ─── Docs ────────────────────────────────────────────────────────────────────
+# Design specs and implementation plans are working artefacts of how this was
+# built, not documentation of what it is. They stay local: the sibling Alchemy
+# projects track no equivalent. What a reader needs is in README.md and
+# CHANGELOG.md.
+docs/
+/site
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ─── Environments ────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ─── Testing / coverage ──────────────────────────────────────────────────────
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.cache
+
+# ─── Type checkers & linters ─────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ─── Editors / OS ────────────────────────────────────────────────────────────
+.idea/
+*.code-workspace
+.history
+.DS_Store
+._*
