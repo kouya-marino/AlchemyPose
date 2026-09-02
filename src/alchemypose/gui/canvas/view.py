@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, SignalInstance
 from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
 from alchemypose.gui import theme
+from alchemypose.gui.canvas.items import KeypointItem
 
 ZOOM_STEP = 1.15
 MIN_ZOOM = 0.05
@@ -29,6 +30,9 @@ def bgr_to_pixmap(bgr: NDArray[np.uint8]) -> QPixmap:
 
 class PoseCanvas(QGraphicsView):
     """A zoomable, pannable image with room for an overlay above it."""
+
+    keypoint_clicked = Signal(int, int, str)          # person_index, keypoint_index, group
+    keypoint_double_clicked = Signal(int, int, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,7 +112,26 @@ class PoseCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._emit_keypoint_signal(event, self.keypoint_clicked)
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._emit_keypoint_signal(event, self.keypoint_double_clicked)
+        super().mouseDoubleClickEvent(event)
+
+    def _emit_keypoint_signal(self, event: QMouseEvent, signal: SignalInstance) -> None:
+        """Resolve the click through the scene's own item lookup.
+
+        ``KeypointItem`` overrides ``shape()`` with an 11 px hit radius while
+        drawing a 6 px dot, so going through ``itemAt`` (rather than
+        re-implementing a distance check against the drawn radius) is what
+        honours that enlarged hit area.
+        """
+        item = self.itemAt(event.position().toPoint())
+        if isinstance(item, KeypointItem):
+            signal.emit(item.person_index, item.keypoint_index, item.group_name)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning_from is not None:

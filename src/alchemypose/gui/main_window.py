@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QSplitter, QStatusBar, QVBoxLayout, QWidget
 
 from alchemypose import __version__
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         self.resize(*WINDOW_GEOMETRY)
         self.setStyleSheet(theme.STYLESHEET)
 
+        from alchemypose.gui.canvas.interaction import SelectionController
         from alchemypose.gui.canvas.scene import PoseOverlay
         from alchemypose.gui.canvas.view import PoseCanvas
         from alchemypose.gui.panels.layers import LayerPanel
@@ -34,6 +36,7 @@ class MainWindow(QMainWindow):
         self.canvas_overlay = PoseOverlay(self.canvas)
         self.presets = PresetBar()
         self.layers = LayerPanel()
+        self.selection = SelectionController(self.canvas_overlay, self.layers)
 
         side = QWidget()
         side_layout = QVBoxLayout(side)
@@ -61,6 +64,13 @@ class MainWindow(QMainWindow):
         self.layers.selection_changed.connect(self._on_selection_changed)
         self.layers.set_selection(selection_for("full_body"))
 
+        self.canvas.keypoint_clicked.connect(self._on_keypoint_clicked)
+        self.canvas.keypoint_double_clicked.connect(self._on_keypoint_double_clicked)
+
+        QShortcut(QKeySequence("Shift+H"), self, self._solo_current)
+        QShortcut(QKeySequence("Alt+H"), self, self.selection.clear)
+        QShortcut(QKeySequence("Esc"), self, self.selection.clear)
+
     def set_status(self, message: str) -> None:
         self._status.showMessage(message)
 
@@ -75,3 +85,18 @@ class MainWindow(QMainWindow):
     def _on_selection_changed(self, selection: KeypointSelection) -> None:
         self.presets.highlight(matching_preset(selection))
         self.canvas_overlay.set_selection(selection)
+
+    def _on_keypoint_clicked(self, person: int, index: int, group: str) -> None:
+        """Click selects: emphasise the group, hide nothing."""
+        self.selection.select_group(group)
+        self.set_status(f"{group.replace('_', ' ')} — person {person + 1}")
+
+    def _on_keypoint_double_clicked(self, person: int, index: int, group: str) -> None:
+        """Double-click solos: hide everything else."""
+        self.selection.solo_group(group)
+        self.set_status(f"Solo: {group.replace('_', ' ')} — person {person + 1}")
+
+    def _solo_current(self) -> None:
+        """Shift+H: solo whatever is currently emphasised, if anything."""
+        if self.selection.emphasised is not None:
+            self.selection.solo_group(self.selection.emphasised)
