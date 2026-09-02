@@ -53,6 +53,7 @@ _BODY_EDGES = (
     (11, 13), (13, 15), (12, 14), (14, 16),
 )
 _FEET_EDGES = ((15, 17), (15, 18), (15, 19), (16, 20), (16, 21), (16, 22))
+_WRIST_TO_HAND_EDGES = ((9, 91), (10, 112))
 
 
 def _contour(start: int, count: int, closed: bool) -> tuple[tuple[int, int], ...]:
@@ -75,7 +76,7 @@ _FACE_EDGES = (
 )
 
 EDGES: tuple[tuple[int, int], ...] = (
-    _BODY_EDGES + _FEET_EDGES + _FACE_EDGES + _hand_edges(91) + _hand_edges(112)
+    _BODY_EDGES + _FEET_EDGES + _FACE_EDGES + _hand_edges(91) + _hand_edges(112) + _WRIST_TO_HAND_EDGES
 )
 
 
@@ -83,16 +84,17 @@ def _r(start: int, stop: int) -> tuple[int, ...]:
     return tuple(range(start, stop))
 
 
-#: Narrow render groups, in the order the layer panel shows them. Every keypoint
-#: belongs to exactly one. The broad groups below are unions of these.
+#: Narrow render groups, in the order the layer panel shows them. A keypoint may belong
+#: to more than one (shared anchor joints); the priority below determines which group "wins"
+#: in group_of(). The broad groups below are unions of these.
 RENDER_GROUPS: dict[str, tuple[int, ...]] = {
     "torso_head": (0, 1, 2, 3, 4, 5, 6, 11, 12),
-    "left_arm": (7, 9),
-    "right_arm": (8, 10),
-    "left_leg": (13, 15),
-    "right_leg": (14, 16),
-    "left_foot": (17, 18, 19),
-    "right_foot": (20, 21, 22),
+    "left_arm": (5, 7, 9),
+    "right_arm": (6, 8, 10),
+    "left_leg": (11, 13, 15),
+    "right_leg": (12, 14, 16),
+    "left_foot": (15, 17, 18, 19),
+    "right_foot": (16, 20, 21, 22),
     "face_jaw": _r(23, 40),
     "face_brows": _r(40, 50),
     "face_nose": _r(50, 59),
@@ -101,6 +103,25 @@ RENDER_GROUPS: dict[str, tuple[int, ...]] = {
     "left_hand": _r(91, 112),
     "right_hand": _r(112, 133),
 }
+
+#: Which group wins when a joint belongs to more than one. Limbs beat the torso, so a
+#: shoulder colours as the person's left/right rather than as midline; legs beat feet,
+#: so an ankle reads as part of the leg it belongs to.
+_GROUP_PRIORITY: tuple[str, ...] = (
+    "left_arm", "right_arm", "left_leg", "right_leg",
+    "left_foot", "right_foot", "left_hand", "right_hand",
+    "face_jaw", "face_brows", "face_nose", "face_eyes", "face_lips",
+    "torso_head",
+)
+
+_INDEX_TO_GROUP: dict[int, str] = {}
+for _name in _GROUP_PRIORITY:
+    for _i in RENDER_GROUPS[_name]:
+        _INDEX_TO_GROUP.setdefault(_i, _name)
+
+# Sanity check: every render group is reachable
+assert set(_GROUP_PRIORITY) == set(RENDER_GROUPS.keys()), \
+    "GROUP_PRIORITY must list all render groups"
 
 
 def _union(*names: str) -> tuple[int, ...]:
@@ -134,11 +155,12 @@ class Topology:
         return len(self.keypoint_names)
 
     def group_of(self, index: int) -> str | None:
-        """The narrowest render group containing ``index``, or None if out of range."""
-        for name, indices in RENDER_GROUPS.items():
-            if index in indices:
-                return name
-        return None
+        """The narrowest render group containing ``index``, or None if out of range.
+
+        When a joint belongs to multiple groups (shared anchor joints like shoulders),
+        returns the group with highest priority in the render hierarchy.
+        """
+        return _INDEX_TO_GROUP.get(index)
 
 
 COCO_WHOLEBODY_133 = Topology(
