@@ -96,6 +96,18 @@ class InferenceWorker:
                 # and finds it is no longer the current thread — so it exits
                 # rather than compete for jobs with the thread a later
                 # ``start()`` has since created.
+                #
+                # That guard also bounds the waiters to one. Reaching ``wait()``
+                # below requires being ``self._thread``, which is a single slot,
+                # and ``stop()`` empties it under the lock — so a straggler
+                # returns here instead of waiting, and no second thread is ever
+                # parked alongside the current one. Both ``notify_all`` calls
+                # therefore have at most one waiter to wake and would behave
+                # identically as plain ``notify``. They stay broad because a
+                # missed wake-up is a silent hang, and deliberately untested:
+                # with one waiter the two spellings cannot be told apart, and a
+                # test implying otherwise would only claim coverage it has not
+                # got.
                 while self._pending is None and not self._stopping and self._thread is me:
                     self._condition.wait()
                 if self._stopping or self._thread is not me:

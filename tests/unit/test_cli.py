@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,3 +74,41 @@ def test_image_rejects_a_missing_output_directory_before_loading_a_model(
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "does not exist" in result.output
     assert str(tmp_path / "missing") in result.output
+
+
+def test_help_names_a_preset_added_to_the_registry() -> None:
+    """``--help`` reads the preset list off ``weights.PRESETS`` instead of repeating it.
+
+    A second, hand-maintained copy drifts the moment a preset is added: the new
+    name is accepted and named in the rejection message, yet ``--help`` still
+    advertises the old three, so the one place a user looks to find the choices
+    is the one place that is wrong.
+
+    The preset has to be added before ``alchemypose.cli`` is imported, because
+    Typer bakes the option's help text into the command when the module is
+    executed — hence the subprocess rather than a monkeypatch. It also keeps the
+    registry edit out of this process, where it would leak into every test that
+    runs after this one.
+    """
+    code = (
+        "from alchemypose.inference import weights\n"
+        "weights.PRESETS['quantum'] = ('yolox_nano', 'rtmw_m_256x192')\n"
+        "from typer.testing import CliRunner\n"
+        "from alchemypose.cli import app\n"
+        "runner = CliRunner()\n"
+        "for argv in (['image', '--help'], ['models', 'fetch', '--help']):\n"
+        "    result = runner.invoke(app, argv)\n"
+        "    assert result.exit_code == 0, result.output\n"
+        "    print(result.output)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "COLUMNS": "200"},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "quantum" in proc.stdout, proc.stdout
+    for preset in ("lite", "balanced", "performance"):
+        assert preset in proc.stdout

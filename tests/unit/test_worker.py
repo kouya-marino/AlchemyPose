@@ -47,6 +47,15 @@ def _image() -> np.ndarray:
     return np.zeros((4, 4, 3), dtype=np.uint8)
 
 
+#: The name ``InferenceWorker`` gives its thread, which is how a leaked one can
+#: be spotted from the outside without reaching into the worker's private state.
+_THREAD_NAME = "alchemypose-inference"
+
+
+def _worker_threads() -> set[threading.Thread]:
+    return {t for t in threading.enumerate() if t.name == _THREAD_NAME and t.is_alive()}
+
+
 def test_result_is_delivered_to_the_callback() -> None:
     done = threading.Event()
     got: list[PoseResult] = []
@@ -96,11 +105,22 @@ def test_a_later_submit_supersedes_an_unstarted_one() -> None:
 
 
 def test_an_engine_error_reaches_on_error_and_the_worker_survives() -> None:
+    """A failing job is reported, and the next one still runs.
+
+    The gate is what makes that a real test. "bad.jpg" has to be *inside* the
+    engine before "good.jpg" is queued: submitted back to back, the second
+    supersedes the first while it is still in the queue — thread start-up is far
+    slower than two calls on the main thread — and the error path never runs at
+    all, leaving a test that passes because nothing was tried.
+    """
+    entered_bad = threading.Event()
+
     class Boom:
         model_name = "boom"
 
         def infer(self, image: np.ndarray, source: str) -> PoseResult:
             if source == "bad.jpg":
+                entered_bad.set()
                 raise RuntimeError("kaboom")
             frame = PoseFrame(frame_index=0, timestamp_s=None, image_size=(1, 1), people=())
             return PoseResult(topology=COCO_WHOLEBODY_133, frames=(frame,), source=source, model="boom")
@@ -112,15 +132,12 @@ def test_an_engine_error_reaches_on_error_and_the_worker_survives() -> None:
     )
     worker.start()
     worker.submit(_image(), "bad.jpg")
-    # Give the worker thread real wall-clock time to spin up and dequeue "bad.jpg"
-    # before the next submit arrives — thread creation is far slower than two
-    # back-to-back Python calls on the main thread, so without this pause
-    # "good.jpg" reliably (not just occasionally) supersedes "bad.jpg" before it
-    # ever starts, and the error path this test targets never runs.
-    time.sleep(0.05)
+    assert entered_bad.wait(timeout=5.0), "the failing job never reached the engine"
+
     worker.submit(_image(), "good.jpg")
-    assert recovered.wait(timeout=5.0)
+    assert recovered.wait(timeout=5.0), "the worker did not survive the failing job"
     worker.stop()
+    assert len(errors) == 1
     assert isinstance(errors[0], RuntimeError)
 
 
@@ -155,3 +172,90 @@ def test_a_worker_started_again_after_stop_still_runs_jobs() -> None:
     finally:
         worker.stop()
     assert got == ["after-restart.jpg"]
+
+
+def test_a_job_outliving_stop_does_not_leave_a_second_worker_thread() -> None:
+    """``stop()`` only asks; a job inside the engine can outlive the join.
+
+    Closing a file while a frame is being inferred, then opening another, is the
+    ordinary way to reach this: ``stop()`` gives up waiting, ``start()`` builds a
+    fresh thread, and the old one is still busy. If it went back to the queue
+    when it finished, two threads would pull from the same single-slot queue —
+    two frames inferred at once, and whichever finished second would paint the
+    canvas, so the user could be left looking at the frame they scrubbed away
+    from. Retiring it is what keeps "one job at a time" true across a restart.
+
+    ``join`` on the straggler is the assertion, not a wait for one: it returns
+    only once that thread has actually exited, and if the guard is gone it never
+    will, because the thread is parked in ``wait()`` for the next job.
+    """
+    engine = GatedEngine()
+    worker = InferenceWorker(lambda: engine, on_result=lambda r: None, on_error=print)
+
+    before = _worker_threads()
+    worker.start()
+    worker.submit(_image(), "outlives-stop.jpg")
+    assert engine.started.wait(timeout=5.0), "the first job never reached the engine"
+    new_threads = _worker_threads() - before
+    assert len(new_threads) == 1, f"expected exactly one worker thread, got {new_threads}"
+    straggler = new_threads.pop()
+
+    # A zero timeout *is* the straggler case, with none of the wall-clock
+    # guessing: the job is provably still inside infer(), so the join is
+    # guaranteed to give up on it, which is what a slow frame does to the
+    # default 2s join in the field.
+    worker.stop(timeout=0.0)
+    worker.start()
+    engine.release.set()
+
+    try:
+        straggler.join(timeout=5.0)
+        assert not straggler.is_alive(), "the thread that outlived stop() went back to the queue"
+        live = _worker_threads() - before
+        assert straggler not in live
+        assert len(live) == 1, f"a restart left {len(live)} live worker threads"
+    finally:
+        worker.stop()
+
+
+def test_a_job_queued_before_stop_does_not_run_after_a_restart() -> None:
+    """``stop()`` empties the queue, and a restart must not replay it.
+
+    A job still queued when inference is stopped has been abandoned — the user
+    closed the file, or scrubbed past that frame and then shut the panel. Left in
+    place, it is the first thing the next ``start()`` picks up, so a stale frame
+    is drawn over whatever image is on the canvas by then, before anything the
+    user has actually asked for.
+
+    Queueing before the thread exists is the shortest route to a job that is
+    pending but unstarted; behind a job in flight is the same state by a longer
+    path. The wait below cannot fail a correct worker: with the queue cleared
+    there is no job to run, so nothing can set ``ran_something`` however long it
+    waits. It is there to catch a worker that kept the job, which dequeues it on
+    its very first loop.
+    """
+    engine = FakeEngine()
+    ran: list[str] = []
+    ran_something = threading.Event()
+    delivered = threading.Event()
+
+    def on_result(r: PoseResult) -> None:
+        ran.append(r.source)
+        ran_something.set()
+        if r.source == "fresh.jpg":
+            delivered.set()
+
+    worker = InferenceWorker(lambda: engine, on_result=on_result, on_error=print)
+    worker.submit(_image(), "stale.jpg")
+    worker.stop()
+
+    worker.start()
+    try:
+        assert not ran_something.wait(timeout=0.5), f"a job queued before stop() ran anyway: {ran}"
+
+        worker.submit(_image(), "fresh.jpg")
+        assert delivered.wait(timeout=5.0), "the restarted worker never ran the new job"
+    finally:
+        worker.stop()
+    assert ran == ["fresh.jpg"]
+    assert engine.seen == ["fresh.jpg"]
