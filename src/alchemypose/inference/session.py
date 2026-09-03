@@ -6,7 +6,7 @@ reason is narrower than "CoreML cannot load that graph" — it loads it fine.
 ``InferenceSession`` returns normally for ``yolox_nano``, ``yolox_tiny`` and
 ``yolox_s`` alike, and ``get_providers()`` on the result reports
 ``['CoreMLExecutionProvider', 'CPUExecutionProvider']``. The failure comes on
-the first ``run()``, inside the partition holding the graph's baked-in NMS::
+the first ``run()``::
 
     FAIL : Non-zero status code returned while running ..._CoreML_..._2 node.
     Status Message: coreml/model/model.mm:67 GetStaticOutputShape
@@ -15,6 +15,18 @@ the first ``run()``, inside the partition holding the graph's baked-in NMS::
 
 Identical on all three detectors, bar the row count: 3549 for the 416x416
 ``nano``/``tiny`` exports, 8400 for the 640x640 ``yolox_s``.
+
+The NMS region is the part CoreML will not take, but it is not where the run
+dies. For ``yolox_nano`` CoreML claims 394 of the graph's 426 nodes and splits
+them over 7 partitions; ``NonMaxSuppression`` is one of the 32 it leaves on
+CPU. Profiling the failing run gives the order ``_0`` (CoreML) -> three CPU
+``Concat``s -> ``_1`` (CoreML) -> ``Unsqueeze``/``Exp`` (CPU) -> ``_2``
+(CoreML), and ``_2`` is where it aborts, so the NMS node never executes at
+all — it is downstream of the abort. Partition ``_2`` sits *upstream* of NMS
+and feeds it: the ``{1,3549}`` inferred shape in the error is one value per
+anchor from the box-decode region, which a CPU ``Concat`` then assembles into
+the ``(1, 3549, 4)`` box tensor NMS consumes. It is not ``dets`` or
+``labels``, which are shaped ``(1, N, 5)`` and ``(1, N)``.
 
 So the thing to guard against is an *execution* failure, not a load failure,
 and a guard wrapped around ``InferenceSession(...)`` alone would never see it.
@@ -92,7 +104,8 @@ def _executes(session: ort.InferenceSession, name: str) -> bool:
     """Whether this session's providers can actually run its graph.
 
     A provider that compiles a subgraph it cannot then execute — which is
-    exactly what CoreML does to YOLOX's NMS partition — only reveals itself
+    exactly what CoreML does to the YOLOX partition feeding NMS — only reveals
+    itself
     when something runs the graph, so this runs it: one inference on zeros.
     Cheap where it succeeds, because the model is already compiled and loaded
     by the time we get here: 4.3 ms for RTMW-m, 15.4 ms for DWPose-l, 38.1 ms
@@ -125,8 +138,15 @@ def make_session(path: Path, *, prefer_coreml: bool) -> ort.InferenceSession:
     inference before it is returned. ``prefer_coreml=False`` skips all of that
     and opens the file on CPU directly.
 
-    The first CoreML session pays a compile cost of a few seconds; that is a
-    one-off per model file, cached by the OS.
+    The first CoreML session pays a compile cost of a few seconds — and so
+    does every session after it. Nothing caches the compiled model: on
+    ``yolox_nano`` a second session in the same process costs what the first
+    did, and a session in a fresh process costs the same again, the spread
+    between them being run-to-run noise rather than a cache. That is what
+    makes ``YoloxDetector`` ask for CPU outright instead of re-learning a
+    known answer at every launch. CoreML does expose a ``ModelCacheDirectory``
+    provider option that persists compiled models between sessions; nothing
+    here passes it, and what it would buy has not been measured.
     """
     providers = chosen_providers(prefer_coreml, ort.get_available_providers())
     if providers == [CPU]:

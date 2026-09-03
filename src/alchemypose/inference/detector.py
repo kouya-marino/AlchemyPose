@@ -2,34 +2,41 @@
 """YOLOX person detection — the top-down pipeline's first stage.
 
 Runs on the CPU execution provider, always. CoreML is not blocked from
-loading this graph — it loads it, then fails the first ``run()`` inside the
-partition holding the baked-in NMS described below; ``session.py`` carries the
-error text and the measurements. ``make_session`` would catch that and fall
-back on its own, but only after spending 1.8 s (``yolox_nano``) to 6.5 s
-(``yolox_s``) building a CoreML session it then discards, so this stage asks
-for CPU up front and opens the same file in 8-12 ms.
+loading this graph — it loads it, then fails the first ``run()`` in a CoreML
+partition *upstream* of the baked-in NMS described below. The NMS itself is
+left on the CPU provider and never runs at all, the abort landing before it;
+``session.py`` carries the error text, the partition breakdown and the
+measurements. ``make_session`` would catch that and fall back on its own, but
+only after spending 1.8 s (``yolox_nano``) to 6.5 s (``yolox_s``) building a
+CoreML session it then discards, so this stage asks for CPU up front and opens
+the same file in 8-12 ms.
 
 **The exported graph is not the raw regression head a first guess would
 assume.** Loading ``yolox_nano``/``yolox_tiny``/``yolox_s`` with ``onnx.load``
 and walking ``graph.node`` shows a full mmdeploy "YOLOX" export: a focus-stem
 reshape/transpose straight on ``input`` (no ``Sub``/``Div`` ahead of it, so no
 baked-in normalisation — the model wants raw pixels), a CSP-Darknet backbone,
-a head, and then a *baked-in* class-aware ``NonMaxSuppression`` (boxes are
-offset by ``class_id * large_constant`` before a single class-agnostic NMS
-call and un-offset after — the standard mmdeploy "multiclass NMS via one NMS
-op" trick) followed by a ``TopK``. So the graph has exactly two outputs:
+a head, and then a *baked-in* ``NonMaxSuppression`` followed by a ``TopK``.
+The NMS is handed scores shaped ``(1, 80, anchors)``, so it suppresses per
+class itself, the way the ONNX operator is defined; the boxes it receives are
+the plain decoded ``(1, anchors, 4)``, not offset by class id. So the graph
+has exactly two outputs:
 
 - ``dets``: ``(1, N, 5)`` float32 — ``x0, y0, x1, y1, score``, xyxy, already
   in the *letterboxed input's* pixel space. Not cx/cy/w/h, not normalised to
   0..1, and NMS has already run — there is nothing left to decode from
   anchors or grids.
-- ``labels``: ``(1, N)`` int64 — the class id per row. Every row observed
-  across all three detectors was class 0 ("person" is the only class these
-  detectors were trained on).
+- ``labels``: ``(1, N)`` int64 — the class id per row. The head still
+  carries all 80 COCO class slots, but only class 0 ("person") holds any
+  signal after the Human-Art fine-tune: on the two-person fixture the best
+  score anywhere in classes 1-79 is 3e-06, far below the graph's own 0.01 NMS
+  threshold, so every row that survives is class 0.
 
-``N`` is a fixed TopK budget (39 for ``yolox_nano`` on a 416x416 canvas), not
-"the number of real objects" — most rows are near-zero-score padding and are
-dropped by the score threshold, not treated as detections.
+``N`` is not "the number of real objects", and it is not a fixed budget
+either: it is ``min(100, rows surviving NMS)``, so it moves with the image —
+``yolox_nano`` returns 39 rows on the two-person fixture, 9 on
+``multipeople.png`` and 1 on zeros. Most of those rows are near-zero-score
+padding, dropped by the score threshold rather than treated as detections.
 
 Preprocessing was verified against the graph and against real images: no
 ``Sub``/``Div`` node precedes the first convolution, and feeding raw BGR
@@ -130,9 +137,9 @@ class YoloxDetector:
 
         ``dets`` is ``(N, 5)`` xyxy+score in letterboxed-canvas pixel space;
         ``labels`` is ``(N,)`` class ids. Most rows are near-zero-score
-        padding out to the fixed TopK budget, so the score threshold does the
-        real filtering here — there is no objectness/class-score product to
-        compute, and no grid decoding left to do (see module docstring).
+        padding, so the score threshold does the real filtering here — there
+        is no objectness/class-score product to compute, and no grid decoding
+        left to do (see module docstring).
         """
         is_person = labels == _PERSON_CLASS
         scores = dets[:, 4]
