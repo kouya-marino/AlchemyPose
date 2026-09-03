@@ -7,9 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-v1, in progress. Nothing has been released: 33 commits on `main`, all dated
-2026-09-02, no tag, nothing on PyPI. This section is therefore the entire
-history of the project so far.
+v1, in progress. Nothing has been released: no tag, nothing on PyPI, and every
+commit so far sits on `main`. This section is therefore the entire history of
+the project.
 
 The layering was deliberate and is enforced rather than intended. `core/` —
 topology, schema, presets, serialisation, the H36M mapping — imports neither Qt
@@ -84,6 +84,51 @@ than Fixed: nothing in this repository was ever broken by it.
   annotation tools: a click emphasises a group and dims the rest, a double-click
   or `Shift+H` hides everything else, and `Esc` / `Alt+H` restores. Solo records
   the tree state it replaced so there is something to return to.
+
+- **Face level of detail, driven by the face's size on screen rather than in the
+  photograph.** Sixty-eight dots at fit-to-window are not detail, they are a grey
+  smudge with a jaw around it, so `gui/canvas/lod.py` picks one of three
+  renderings from the longest on-screen edge of the largest drawn face:
+  `CONTOURS` below 80 px, `REGIONS` from 80 px, `POINTS` from 200 px. The
+  contours are drawn at every level — it is the individual keypoint items that
+  are skipped below `POINTS`, which is also the only level where they are worth
+  making hoverable, since at 200 px across adjacent dlib-68 points sit about
+  8–12 px apart against the 11 px hit radius a joint claims. From `REGIONS` up,
+  jaw, brows, nose, eyes and lips take their own colours in place of the theme's
+  single face grey, in hues chosen to avoid the green and orange the legend
+  reserves for the person's left and right.
+
+  `PoseCanvas` gained `zoom_changed`, emitted from `zoom_by`, `fit_to_window` and
+  `zoom_to_rect`, and the overlay rebuilds only when a zoom actually crosses one
+  of the two thresholds — a rebuild is every item in the scene, and a wheel event
+  arrives dozens of times a second. A face with no extent at all is treated as
+  unmeasured rather than small and keeps its points: contours through coincident
+  points are zero-length strokes, so thinning there would leave nothing at all.
+  `lod.py` imports no Qt, so the thresholds are tested without a widget.
+
+  The **Face** chip now also calls `zoom_to_rect` on the face bounds, so it
+  delivers the magnification a separate face mode would have given, on the same
+  canvas and with no second viewport. Clicking it in the seconds before a
+  detection returns is harmless: the bounds are empty then, and `zoom_to_rect`
+  ignores an empty rectangle.
+
+- **Export, as three plain functions under an Export menu.** `gui/export.py`
+  offers `export_json`, `export_csv` and `export_png`, each taking what it needs
+  and a path — no dialog, no window, no status bar — which is what lets the whole
+  of export be tested without a modal. The PNG renders the **scene**, not the
+  widget: rendering the widget would bake in the zoom, the scroll position, the
+  window's aspect ratio and the empty canvas either side of a portrait, whereas
+  the scene is the photograph plus the overlay in image-pixel coordinates, so
+  1:1 gives back the source image's own resolution and the same file whatever
+  the view is doing.
+
+  Nothing that can go wrong in an export is a bug — there may be no result yet,
+  the user may cancel, the folder they typed may not exist, the image may be too
+  large to allocate — so each of those ends as a sentence in the status bar or a
+  reported error rather than a traceback. A PNG needs only a photograph; JSON and
+  CSV need a result. The suggested filename follows the photograph's own stem.
+  The save dialog sits behind a `SavePrompt` protocol and is injected, for the
+  same reason `Reporter` is: no test opens one.
 
 - **`track_id`, `keypoints_3d` and `space_3d` exist on `PersonPose` from the first
   commit of the schema, unpopulated.** They cost nothing now and they are what
@@ -216,10 +261,22 @@ than Fixed: nothing in this repository was ever broken by it.
 
 ### Notes
 
-- 343 tests. 240 run with no display at all; 103 need `QT_QPA_PLATFORM=offscreen`;
-  7 of the 240 additionally need cached weights and skip without them.
-  `ruff check src tests` is clean and `mypy` reports zero errors across 36 source
-  files.
+- 429 tests, all of them passing. 267 run with no display at all; 162 need
+  `QT_QPA_PLATFORM=offscreen`; 11 of the 267 additionally need cached weights and
+  skip without them. `ruff check src tests` is clean and `mypy` reports zero
+  errors across 38 source files.
+- **The suite passes and then sometimes aborts, and both halves of that are
+  true.** Every test reports green and the run prints its `429 passed` line — and
+  in three of nineteen consecutive runs here the process then died during
+  interpreter shutdown with `libc++abi: terminating due to uncaught exception of type
+  std::__1::system_error: recursive_mutex lock failed: Invalid argument`, leaving
+  pytest with exit status 134. It is a teardown fault rather than a failing
+  assertion, but it is a red build to anything that reads an exit code, which is
+  every CI system there is. It is under investigation and is not yet understood,
+  so "the tests pass" has to be read as "the tests pass, and the process that ran
+  them survives about eight times in ten". Measure it as
+  `pytest -q > out 2>&1; rc=$?` — a pipeline like `pytest -q | tail -1` reports
+  `tail`'s status and hides the abort completely.
 - **The import boundary is enforced, not just intended.** A subprocess test
   asserts that `import alchemypose` loads zero `PySide6` modules, and running the
   full engine headless was measured at 0 Qt modules loaded. `core/` imports
@@ -252,11 +309,25 @@ than Fixed: nothing in this repository was ever broken by it.
   0.25 and 0.55, calibrated against measured score distributions on both models,
   and the source says to re-measure rather than re-tune by eye if the score
   pipeline changes again.
-- Each fix was checked by reverting it and confirming the new test fails. Two
-  tests were found unable to fail and rewritten: the channel-order guard described
-  above, and one that asserted a preset chip toggles itself — disproved with a
-  standalone script (a checkable `QToolButton` does toggle itself on click) and
-  deleted rather than kept as a false assertion.
+- **Fixes are checked by reverting them and confirming the new test goes red, and
+  the record of which ones is worth keeping honest.** Two tests were found unable
+  to fail: the channel-order guard described above, which was rewritten, and one
+  that asserted a preset chip toggles itself — disproved with a standalone script
+  (a checkable `QToolButton` does toggle itself on click) and deleted rather than
+  kept as a false assertion.
+
+  The peak-scale fix was the one the claim did not cover. Dropping
+  `PEAK_SCALE["rtmw_l_384x288"]` back to 1.0 left the whole integration suite
+  green while the confidence slider went inert again, because the only assertions
+  within reach were that scores land in `[0, 1]` — which the clip satisfies — and
+  that *some* threshold keeps a strict subset, which 397 scores pinned at exactly
+  1.0 also satisfies. Both guards were rebuilt around the *shape* of the
+  distribution rather than its bounds: the unit tests push each model's recorded
+  raw peak range back through the real decoder and require the resulting
+  confidences to stay spread out at both ends, and the integration tests pin,
+  per preset, where the median sits, how much survives each of several
+  thresholds, and how much of the 0–1 range does useful filtering. The same
+  revert now turns four tests red, two of them against cached weights.
 - Two assumptions written down before the code was run turned out to be wrong, and
   both were caught by running it: an error-recovery test that failed 100 times out of
   100 because two back-to-back submissions meant the second always superseded the
