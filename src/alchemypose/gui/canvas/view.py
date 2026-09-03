@@ -43,6 +43,15 @@ class PoseCanvas(QGraphicsView):
     #: only forget their bookkeeping; they must not touch the scene.
     scene_cleared = Signal()
 
+    #: Emitted with the view's new scale whenever the transform changes.
+    #:
+    #: Markers set ``ItemIgnoresTransformations``, so nothing in the scene can
+    #: tell how big it is on screen; anything whose *rendering* depends on that
+    #: — the face detail level does — has to be told. Emitted from the four
+    #: places that move the transform and nowhere else, so a receiver may
+    #: treat it as the complete record of the view's scale.
+    zoom_changed = Signal(float)
+
     def __init__(self) -> None:
         super().__init__()
         self._scene = QGraphicsScene(self)
@@ -77,6 +86,7 @@ class PoseCanvas(QGraphicsView):
         self._pixmap_item.setZValue(-100)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
         self.resetTransform()
+        self._emit_zoom()
 
     @property
     def image_item(self) -> QGraphicsPixmapItem | None:
@@ -88,16 +98,22 @@ class PoseCanvas(QGraphicsView):
     def zoom_percent(self) -> float:
         return float(self.transform().m11()) * 100.0
 
+    def _emit_zoom(self) -> None:
+        """Announce the scale after a transform change. Uniform, so m11 is all of it."""
+        self.zoom_changed.emit(float(self.transform().m11()))
+
     def zoom_by(self, factor: float) -> None:
         """Scale, refusing steps that would leave the allowed range."""
         target = self.transform().m11() * factor
         if not (MIN_ZOOM <= target <= MAX_ZOOM):
             return
         self.scale(factor, factor)
+        self._emit_zoom()
 
     def fit_to_window(self) -> None:
         if self._pixmap_item is not None:
             self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self._emit_zoom()
 
     def zoom_to_rect(self, rect: QRectF, margin: float = 0.15) -> None:
         """Frame a scene rectangle — used by the Face preset to magnify the head."""
@@ -110,6 +126,7 @@ class PoseCanvas(QGraphicsView):
             rect.height() * margin,
         )
         self.fitInView(padded, Qt.AspectRatioMode.KeepAspectRatio)
+        self._emit_zoom()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

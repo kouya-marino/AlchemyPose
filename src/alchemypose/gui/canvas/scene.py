@@ -6,7 +6,8 @@ rebuilds its scene every video frame. Simplicity beats a diffing algorithm here.
 
 Because everything is rebuilt, every *visual* state an item can be in must be
 reproducible from the overlay's own fields: confidence fades from the result and
-threshold, emphasis dimming from ``_emphasis``. An item's opacity is always
+threshold, emphasis dimming from ``_emphasis``, and how much of the face is
+drawn at all from ``_zoom``. An item's opacity is always
 ``_target_opacity(item)`` — nothing sets it to an ad-hoc value that a rebuild
 would then forget.
 """
@@ -15,9 +16,11 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, QVariantAnimation, Signal
+from PySide6.QtGui import QColor
 
-from alchemypose.core.schema import KeypointSelection, PoseResult
+from alchemypose.core.schema import KeypointSelection, PersonPose, PoseResult
 from alchemypose.gui import theme
+from alchemypose.gui.canvas import lod
 from alchemypose.gui.canvas.items import BoneItem, KeypointItem
 from alchemypose.gui.canvas.view import PoseCanvas
 
@@ -31,8 +34,11 @@ from alchemypose.gui.canvas.view import PoseCanvas
 # (dash 0.5, full 0.8) were set while scores were unnormalised logits and,
 # against honest confidences, dashed ~72% of the default preset's skeleton and
 # let none of it reach full opacity — a cue that applies to everything is no
-# cue. If the score pipeline changes again, RE-MEASURE (the script lives in
-# the Task 21 report) rather than re-tune by eye.
+# cue. If the score pipeline changes again, RE-MEASURE rather than re-tune by
+# eye: run both presets over that fixture, collect the ``PersonPose.scores`` of
+# the keypoints that survive the default threshold, and read the three numbers
+# back off that distribution — the dash cut low in its tail, the full-opacity
+# cut around its upper middle, the floor just under its lowest survivors.
 
 DASH_BELOW = 0.25
 """A bone whose weaker endpoint confidence falls under this is drawn dashed.
@@ -102,8 +108,8 @@ class PoseOverlay(QObject):
     so hover can be surfaced as ordinary Qt signals — ``KeypointItem`` itself is
     not a ``QObject`` (``QGraphicsItem`` does not support multiple inheritance
     with it cleanly), so its hover events are routed here through a plain
-    callback and re-emitted as ``keypoint_hovered`` / ``keypoint_left``. Task 20
-    connects these to the inspector panel.
+    callback and re-emitted as ``keypoint_hovered`` / ``keypoint_left``, which
+    ``MainWindow`` connects to the inspector panel.
 
     The canvas owns the scene and wipes it whenever a new image is shown; the
     overlay caches references to items *in* that scene. Neither is wrong, but
@@ -122,6 +128,11 @@ class PoseOverlay(QObject):
         self._selection = KeypointSelection(visible=frozenset())
         self._threshold = 0.3
         self._emphasis: str | None = None
+        #: The view's current scale, mirrored here from ``PoseCanvas.zoom_changed``.
+        #: Keypoint items ignore the view transform, so how big the face is *on
+        #: screen* — the only thing the detail level may depend on — is its scene
+        #: extent times this, and the overlay cannot read it off an item.
+        self._zoom = 1.0
         self.keypoint_items: list[KeypointItem] = []
         self.bone_items: list[BoneItem] = []
         #: Confidence-derived opacity per live item, keyed by ``id(item)``.
@@ -151,6 +162,107 @@ class PoseOverlay(QObject):
     def emphasis(self) -> str | None:
         """The render group currently emphasised, or ``None`` for no dimming."""
         return self._emphasis
+
+    # ------------------------------------------------------- face detail level
+
+    @property
+    def face_detail(self) -> lod.FaceDetail:
+        """How much face the current zoom earns — see ``canvas.lod``.
+
+        A face with no *drawn* extent is not a small face but an unmeasured
+        one, and the trade the lower levels make buys nothing there. Either
+        way round: with every point on one coordinate (a stub result, or a
+        detection that collapsed) the contours are zero-length strokes, so
+        dropping the points would leave nothing at all; with no point clearing
+        the confidence threshold there is nothing to drop in the first place.
+        Unmeasured therefore keeps the points; only a face with real drawn
+        extent is thresholded.
+        """
+        size = self._face_screen_size()
+        if size <= 0.0:
+            return lod.FaceDetail.POINTS
+        return lod.face_detail(size)
+
+    def _is_confident(self, person: PersonPose, index: int) -> bool:
+        """Whether one keypoint is trustworthy enough to put on screen at all.
+
+        A score of exactly 0.0 is not "zero confidence" but a sentinel:
+        ``decode_simcc`` clips to [0, 1], so 0.0 arises only from a
+        non-positive SimCC peak, whose *position* it also zeroes.
+        Un-transformed, that (0, 0) lands on the crop's top-left corner. The
+        slider can reach 0.0, and ``>=`` alone would then pile such joints on
+        each person's box corner; skip them regardless of threshold.
+        """
+        score = float(person.scores[index])
+        return score > 0.0 and score >= self._threshold
+
+    def _is_drawable(self, person: PersonPose, index: int) -> bool:
+        """Whether one keypoint of one person is actually drawn: visible *and* confident.
+
+        The two halves are deliberately separable. Confidence decides whether
+        the detector's answer belongs on screen at all; the layer selection is
+        the user choosing which parts of what is on screen to look at. Only the
+        first is a fact about the photograph, which is why ``_face_screen_size``
+        consults ``_is_confident`` alone.
+        """
+        return self._selection.is_visible(index) and self._is_confident(person, index)
+
+    def _face_screen_size(self) -> float:
+        """The longest on-screen edge of the largest *drawn* face, in pixels.
+
+        Drawn, not merely detected. A face whose points all fall under the
+        confidence threshold renders nothing, and measuring it anyway can only
+        ever push the level *up* — never adding a face the user can see, only
+        spending 68 items on some other, smaller face they cannot read. That is
+        precisely the cost this whole trade exists to avoid, so the box covers
+        the points that clear ``_is_confident``.
+
+        Confidence only, *not* ``_is_drawable``: hiding all but the lips does
+        not make the head on screen any smaller, and measuring only the
+        surviving layer would strip the region colours from a region at the
+        moment the user isolated it — backwards.
+
+        ``group_bounds`` is deliberately not reused either. It answers "where
+        is this group", which is what the Face preset needs to frame the head,
+        and framing a head whose confidence the user dropped below the slider
+        is still the right thing for that button to do.
+        """
+        if self._result is None:
+            return 0.0
+        people = self._result.frames[0].people
+        chosen = self._selection.persons
+        indices = range(len(people)) if chosen is None else sorted(chosen)
+        face = self._result.topology.groups.get("face", ())
+        # The largest, not the first: with the view framed on one big face,
+        # a smaller one beside it is still drawn, and hiding *its* points on
+        # the strength of a neighbour's size would be arbitrary.
+        longest = 0.0
+        for index in indices:
+            person = people[index] if 0 <= index < len(people) else None
+            if person is None:
+                continue
+            drawn = [i for i in face if self._is_confident(person, i)]
+            if not drawn:
+                continue
+            xs = [float(person.keypoints[i][0]) for i in drawn]
+            ys = [float(person.keypoints[i][1]) for i in drawn]
+            longest = max(longest, max(xs) - min(xs), max(ys) - min(ys))
+        return longest * self._zoom
+
+    def on_zoom_changed(self, zoom: float) -> None:
+        """Rebuild only when the zoom has crossed a face detail threshold.
+
+        Connected to ``PoseCanvas.zoom_changed``, which fires on every wheel
+        notch. A rebuild is hundreds of items, and three detail levels are
+        separated by only two thresholds, so the level changes just twice
+        across the whole range: sweeping ``MIN_ZOOM`` to ``MAX_ZOOM`` a notch
+        at a time is 48 calls and 2 rebuilds. Those two notches are the only
+        ones allowed to pay for one.
+        """
+        before = self.face_detail
+        self._zoom = zoom
+        if self.face_detail is not before:
+            self._rebuild()
 
     # ------------------------------------------------------------------ state
 
@@ -231,21 +343,16 @@ class PoseOverlay(QObject):
         scene = self._canvas.scene()
         topology = self._result.topology
         frame = self._result.frames[0]
+        # Read once: it walks every person's face box, and the answer cannot
+        # change while one rebuild is in flight.
+        detail = self.face_detail
 
         for person_index, person in enumerate(frame.people):
             if self._selection.persons is not None and person_index not in self._selection.persons:
                 continue
 
-            def drawable(i: int) -> bool:
-                # A score of exactly 0.0 is not "zero confidence" but a sentinel:
-                # ``decode_simcc`` clips to [0, 1], so 0.0 arises only from a
-                # non-positive SimCC peak, whose *position* it also zeroes.
-                # Un-transformed, that (0, 0) lands on the crop's top-left
-                # corner. The slider can reach 0.0, and ``>=`` alone would then
-                # pile such joints on each person's box corner; skip them
-                # regardless of threshold.
-                score = float(person.scores[i])
-                return self._selection.is_visible(i) and score > 0.0 and score >= self._threshold
+            def drawable(i: int, person: PersonPose = person) -> bool:
+                return self._is_drawable(person, i)
 
             for a, b in topology.edges:
                 if not (drawable(a) and drawable(b)):
@@ -256,8 +363,8 @@ class PoseOverlay(QObject):
                 bone = BoneItem(
                     pa,
                     pb,
-                    theme.color_for(topology.group_of(a) or ""),
-                    theme.color_for(topology.group_of(b) or ""),
+                    self._color_for(topology.group_of(a) or "", detail),
+                    self._color_for(topology.group_of(b) or "", detail),
                     confident=weakest >= DASH_BELOW,
                 )
                 scene.addItem(bone)
@@ -269,13 +376,17 @@ class PoseOverlay(QObject):
                 if not drawable(i):
                     continue
                 group_name = topology.group_of(i) or ""
+                if lod.is_face_group(group_name) and not detail.draws_points:
+                    # The contours through these points are drawn either way;
+                    # the dots are what would smear them.
+                    continue
                 score = float(person.scores[i])
                 item = KeypointItem(
                     person_index=person_index,
                     keypoint_index=i,
                     group_name=group_name,
                     name=topology.keypoint_names[i],
-                    color=theme.color_for(group_name),
+                    color=self._color_for(group_name, detail),
                     score=score,
                     on_hover_enter=self._on_keypoint_hover_enter,
                     on_hover_leave=self._on_keypoint_hover_leave,
@@ -285,6 +396,18 @@ class PoseOverlay(QObject):
                 self.keypoint_items.append(item)
                 self._confidence[id(item)] = confidence_opacity(score, self._threshold)
                 item.setOpacity(self._target_opacity(item))
+
+    def _color_for(self, group: str, detail: lod.FaceDetail) -> QColor:
+        """The colour a group draws in, which for the face depends on the detail level.
+
+        The theme paints every face group one grey, because at a normal zoom
+        that is all the face is: an outline. Once it is large enough for the
+        regions to be told apart, they are given their own colours — the same
+        strokes, saying more.
+        """
+        if detail.colours_by_region and group in lod.REGION_COLORS:
+            return QColor(lod.REGION_COLORS[group])
+        return theme.color_for(group)
 
     # --------------------------------------------------------------- opacity
 
@@ -371,21 +494,38 @@ class PoseOverlay(QObject):
     # ----------------------------------------------------------------- bounds
 
     def group_bounds(self, person_index: int, group: str) -> QRectF:
-        """The scene rectangle covering one group of one person — used to zoom to it."""
-        if self._result is None:
+        """The scene rectangle covering one group of one person — used to zoom to it.
+
+        An empty rectangle for anything unanswerable — no result yet, no such
+        person, no such group — because the callers are a zoom and a
+        measurement, and both already do nothing with an empty one. The Face
+        chip is clickable in the seconds between opening a photograph and its
+        detection returning, and must be harmless there.
+        """
+        result = self._result
+        person = self._person_at(person_index)
+        if result is None or person is None:
             return QRectF()
-        person = self._result.frames[0].people[person_index]
-        indices = self._result.topology.groups.get(group, ())
+        indices = result.topology.groups.get(group, ())
         if not indices:
             return QRectF()
         xs = [float(person.keypoints[i][0]) for i in indices]
         ys = [float(person.keypoints[i][1]) for i in indices]
         return QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
 
-    def person_bounds(self, person_index: int) -> QRectF:
+    def _person_at(self, person_index: int) -> PersonPose | None:
+        """One person of the current result, or ``None`` if there is no such person."""
         if self._result is None:
+            return None
+        people = self._result.frames[0].people
+        if not 0 <= person_index < len(people):
+            return None
+        return people[person_index]
+
+    def person_bounds(self, person_index: int) -> QRectF:
+        person = self._person_at(person_index)
+        if person is None:
             return QRectF()
-        person = self._result.frames[0].people[person_index]
         if person.bbox is not None:
             x0, y0, x1, y1 = person.bbox
             return QRectF(x0, y0, x1 - x0, y1 - y0)

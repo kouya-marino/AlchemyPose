@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
@@ -29,10 +30,20 @@ from alchemypose.gui import theme
 from alchemypose.gui.reporting import DialogReporter, Reporter
 from alchemypose.inference.engine import PoseEngine
 
+if TYPE_CHECKING:
+    from alchemypose.gui.export import SavePrompt
+
 WINDOW_TITLE = "AlchemyPose"
 WINDOW_GEOMETRY = (1440, 900)
 DEFAULT_CONFIDENCE_THRESHOLD = 0.3
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+
+#: The Export menu, in order: label, file suffix, and the save dialog's filter.
+EXPORT_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("Keypoints as JSON…", "json", "JSON (*.json)"),
+    ("Keypoints as CSV…", "csv", "CSV (*.csv)"),
+    ("Overlay as PNG…", "png", "PNG image (*.png)"),
+)
 
 
 def default_engine_factory() -> PoseEngine:
@@ -52,12 +63,15 @@ class MainWindow(QMainWindow):
 
     ``engine_factory`` exists for tests and for anyone embedding the window
     with a different model; the default builds RTMW lazily on the worker.
+    ``reporter`` and ``save_prompt`` are injected for the same reason as each
+    other: both open a modal, and a test must never construct one.
     """
 
     def __init__(
         self,
         reporter: Reporter | None = None,
         engine_factory: Callable[[], PoseEngine] | None = None,
+        save_prompt: SavePrompt | None = None,
     ) -> None:
         super().__init__()
         self.reporter: Reporter = reporter or DialogReporter()
@@ -69,6 +83,7 @@ class MainWindow(QMainWindow):
         from alchemypose.gui.canvas.interaction import SelectionController
         from alchemypose.gui.canvas.scene import PoseOverlay
         from alchemypose.gui.canvas.view import PoseCanvas
+        from alchemypose.gui.export import DialogSavePrompt
         from alchemypose.gui.panels.inspector import Inspector, LegendWidget
         from alchemypose.gui.panels.layers import LayerPanel
         from alchemypose.gui.panels.presets import PresetBar
@@ -77,6 +92,7 @@ class MainWindow(QMainWindow):
         self._pending_source: str | None = None
         self._person: int | None = None
         self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
+        self.save_prompt: SavePrompt = save_prompt or DialogSavePrompt()
 
         self.canvas = PoseCanvas()
         self.canvas_overlay = PoseOverlay(self.canvas)
@@ -111,6 +127,7 @@ class MainWindow(QMainWindow):
         self.set_status("Ready.")
 
         self._build_toolbar()
+        self._build_export_menu()
 
         self.presets.preset_chosen.connect(self._apply_preset)
         self.layers.selection_changed.connect(self._on_selection_changed)
@@ -118,6 +135,9 @@ class MainWindow(QMainWindow):
 
         self.canvas.keypoint_clicked.connect(self._on_keypoint_clicked)
         self.canvas.keypoint_double_clicked.connect(self._on_keypoint_double_clicked)
+        # The overlay cannot see the view transform, and how much face it draws
+        # depends on it; this is the only thing that tells it.
+        self.canvas.zoom_changed.connect(self.canvas_overlay.on_zoom_changed)
         self.canvas_overlay.keypoint_hovered.connect(self._on_keypoint_hovered)
         self.canvas_overlay.keypoint_left.connect(self.inspector.clear)
 
@@ -176,6 +196,70 @@ class MainWindow(QMainWindow):
         self._confidence_label = QLabel(f"{self._confidence_threshold:.2f}")
         self._confidence_label.setFixedWidth(36)
         toolbar.addWidget(self._confidence_label)
+
+    # ------------------------------------------------------------------ export
+
+    def _build_export_menu(self) -> None:
+        menu = self.menuBar().addMenu("Export")
+        self.export_actions: dict[str, QAction] = {}
+        for label, suffix, file_filter in EXPORT_KINDS:
+            action = QAction(label, self)
+            # Defaults, not closure capture: ``triggered`` also passes a
+            # checked flag, and a bare closure would read the loop variable
+            # after the loop had finished with it.
+            action.triggered.connect(lambda _checked=False, s=suffix, f=file_filter: self._export(s, f))
+            menu.addAction(action)
+            self.export_actions[suffix] = action
+
+    def _export(self, suffix: str, file_filter: str) -> None:
+        """Ask where it should go, then write it.
+
+        Nothing that can go wrong here is a bug: there may be no result yet,
+        the user may cancel, and the folder they type may not exist. Each of
+        those ends as a sentence, not a traceback.
+        """
+        write = self._export_writer(suffix)
+        if write is None:
+            self.set_status("Nothing to export yet — open an image first.")
+            return
+
+        path = self.save_prompt.ask(self, "Export", f"{self._export_stem()}.{suffix}", file_filter)
+        if path is None:
+            return
+
+        try:
+            write(path)
+        except AlchemyPoseError as exc:
+            self.reporter.error("Export failed", str(exc))
+            self.set_status("Export failed.")
+            return
+        self.set_status(f"Wrote {path.name}")
+
+    def _export_writer(self, suffix: str) -> Callable[[Path], None] | None:
+        """The function that writes this format, or ``None`` if there is nothing to write.
+
+        Answering both questions in one place is what keeps the caller free of
+        'this cannot be None by now' assertions: the writer it returns closes
+        over the result it just checked.
+        """
+        from alchemypose.gui.export import export_csv, export_json, export_png
+
+        if suffix == "png":
+            if self.canvas.image_item is None:
+                return None
+            return lambda path: export_png(self.canvas, path)
+
+        result = self._result
+        if result is None:
+            return None
+        if suffix == "json":
+            return lambda path: export_json(result, path)
+        return lambda path: export_csv(result, path)
+
+    def _export_stem(self) -> str:
+        """Name the file after the photograph it came from, when there is one."""
+        source = self._pending_source
+        return Path(source).stem if source else "pose"
 
     # ----------------------------------------------------------------- status
 
@@ -251,18 +335,36 @@ class MainWindow(QMainWindow):
     def _push_selection(self) -> None:
         """Send what should be drawn to the canvas.
 
-        The only writer of ``canvas_overlay.set_selection`` in the app. The two
+        The only caller of ``canvas_overlay.set_selection`` in the app. The two
         halves of "what is drawn" live in different places — which groups in the
-        tree, which person in the chips — and only this method sees both, so
-        anything that changes either half calls this rather than writing to the
-        overlay itself. A second writer would inevitably know about one half and
-        quietly reset the other.
+        tree, which person in the chips — and only ``_effective_selection`` puts
+        them together, so a change to either half comes back through here rather
+        than writing to the overlay itself. A second caller would inevitably
+        know about one half and quietly reset the other.
+
+        It is not the only *writer* of the overlay's selection: ``_on_result``
+        hands it to ``set_result`` instead, because a new result and the
+        selection it should be drawn with have to arrive in one call. That path
+        composes the two halves through the same ``_effective_selection``, which
+        is the invariant that matters — not that every write funnels through
+        this method.
         """
         self.canvas_overlay.set_selection(self._effective_selection())
 
     def _apply_preset(self, name: str) -> None:
-        """A chip only ever writes to the tree; the tree tells everyone else."""
+        """A chip only ever writes to the tree; the tree tells everyone else.
+
+        Face is the exception, and only because it also moves the *view*: there
+        is no face mode and no second canvas, so what a face tab would have
+        given is the magnification, and the chip gives that on the same canvas.
+        Clicking it in the seconds between opening a photograph and its
+        detection returning is harmless — the bounds are empty then, and
+        ``zoom_to_rect`` ignores an empty rectangle.
+        """
         self.layers.set_selection(selection_for(name))
+        if name == "face":
+            person = 0 if self._person is None else self._person
+            self.canvas.zoom_to_rect(self.canvas_overlay.group_bounds(person, "face"))
 
     def _on_selection_changed(self, selection: KeypointSelection) -> None:
         """Every group change lands here, whoever made it.

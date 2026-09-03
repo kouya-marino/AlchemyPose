@@ -1,9 +1,12 @@
 """Select and solo: the controller, the gestures that drive it, and the window
 that owns the result.
 
-The rig here is deliberately wired the way ``MainWindow`` wires the real thing —
-tree change to canvas, and nothing else — because the whole point of the design
-is that ``SelectionController`` has exactly one way out.
+Two fixtures, deliberately different. ``rig`` is the controller, a layer tree,
+and one wire from the tree to the canvas — a cut-down stand-in that exists to
+prove ``SelectionController`` has exactly one way out, and nothing more.
+``window`` is the real ``MainWindow``. Anything about how the tree's selection
+and the person chips combine belongs in the ``window`` tests, because that
+combining is precisely what the rig leaves out; see the fixture below.
 """
 
 import numpy as np
@@ -81,10 +84,18 @@ def _crowd_result(people: int) -> PoseResult:
 def rig(qtbot):  # type: ignore[no-untyped-def]
     """A controller and the one wire it is allowed to reach the canvas through.
 
-    ``MainWindow`` connects the tree's ``selection_changed`` to the canvas and
-    lets every visibility change — presets, checkboxes, solo — travel that way.
-    The rig does the same, so a solo here goes exactly as far as it does in the
-    app: into the tree, and out again only because the tree announced it.
+    That wire is the whole point: ``SelectionController`` writes only to the
+    tree, so a solo reaches the canvas only because the tree announced it, and
+    cutting the wire (as one test below does) must leave the canvas untouched.
+
+    It is not how ``MainWindow`` connects the same two objects. The rig joins
+    ``selection_changed`` straight to ``PoseOverlay.set_selection``, which
+    carries the tree's *raw* selection; the window routes it through
+    ``_on_selection_changed`` -> ``_push_selection`` ->
+    ``set_selection(_effective_selection())``, narrowing it to the chosen
+    person on the way. So no test using this fixture can catch a regression in
+    that narrowing, or in anything else the window adds — the person-chip
+    tests at the end of this file use the real window for exactly that reason.
     """
     from alchemypose.gui.canvas.interaction import SelectionController
     from alchemypose.gui.canvas.scene import PoseOverlay
