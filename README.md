@@ -291,33 +291,60 @@ the layer panel and presets carry over unchanged; the new work is the viewport.
 ## Development
 
 ```bash
-pytest tests/unit -q          # core and inference; no weights, no display needed
-ruff check src tests
+pytest tests/unit -q          # core and inference; no display needed
+ruff check src tests main.py
 mypy
+mypy main.py
 QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
 The GUI tests need a Qt platform plugin, not a display: `offscreen` renders into a
-buffer, so there is no xvfb anywhere in this project.
+buffer, so there is no xvfb anywhere in this project. They do not need that variable
+on the command line, though — `tests/gui/conftest.py` sets it itself, at import,
+before any widget can be constructed, so a bare `pytest` runs them headless too.
+Setting it explicitly is belt and braces, and it is what the CI step does.
 
-CI (`.github/workflows/ci.yml`) runs the first four of those on Python 3.12 — the only
-version, because `requires-python` is pinned to `>=3.12,<3.13`. It never runs the
-integration tests: they want all 464 MB of cached weights, and a CI job has no
-business downloading that. On a machine without them they skip rather than fail.
+Two of the unit tests are marked `models` and skip without cached weights, so the
+first line above reports a couple of skips rather than a clean sweep. `main.py` sits
+outside `src/`, so neither `ruff check src tests` nor a bare `mypy` reaches it; it
+needs naming, which is why it appears twice above.
 
-**Two caveats, stated rather than implied.** That workflow has never actually run:
-the file is not committed, so GitHub has never seen it, and the list of Linux system
-libraries further up was derived by reading the PySide6 wheel rather than by watching
-a runner install them. Assume it is wrong until a run is green. And the suite, while
-every test in it currently passes, aborts during interpreter shutdown in roughly two
-runs out of ten — `libc++abi: terminating due to uncaught exception of type
+CI (`.github/workflows/ci.yml`) runs the lint, type and test gates on Python 3.12 —
+the only version, because `requires-python` is pinned to `>=3.12,<3.13`. Nothing on
+a runner ever downloads weights, so the `models`-marked tests never actually execute
+there. They skip, which is a green tick meaning *not exercised* rather than
+*passed*.
+
+**It has run, and it passed.** Three runs so far, every one a push to `main` and
+every one successful: `e9aebc2` and `88a659e` on 2 September, `51aba8a` on
+3 September (UTC), each finishing in under seventy seconds on `ubuntu-latest`. The
+most recent reported `ruff` clean, `mypy` with no issues across 38 source files,
+256 passed and 2 skipped in `tests/unit`, and 162 passed in `tests/gui`. It also
+printed `Qt 6.11.2 on platform offscreen`, which is the line worth having: the list
+of Linux system libraries further up was derived by reading the PySide6 wheel's ELF
+headers rather than by watching a runner install them, and a runner has now loaded
+the offscreen plugin with exactly that list present and nothing more.
+
+Two things that tick does not cover. It says nothing about the half of the project
+that needs weights — CoreML, the timings and the score distributions on this page
+have only ever been measured on one Apple-silicon machine. And a workflow is proven
+only for the revision that ran it: edits to `ci.yml` after `51aba8a` have not yet
+met a runner.
+
+**The suite used to pass and then abort. It no longer does.** It would die during
+interpreter shutdown — `libc++abi: terminating due to uncaught exception of type
 std::__1::system_error: recursive_mutex lock failed: Invalid argument`, exit status
-134 — *after* the summary line has already printed. It is a teardown fault rather
-than a failing assertion, and it is being tracked down. Until it is, run the suite
-as `pytest -q > out 2>&1; rc=$?` and read `rc`: a pipeline such as
-`pytest -q | tail -1` reports the exit status of `tail` and hides the abort
-completely.
+134, printed *after* the summary line had gone by. The cause was onnxruntime's
+telemetry client, which uploads on a thread of its own; at exit the teardown of its
+log manager frees a mutex an in-flight upload then tries to lock. `tests/conftest.py`
+now sets `ORT_DISABLE_TELEMETRY=1` before anything imports onnxruntime, which is the
+only moment the setting is read. Measured here over 40 runs per arm, interleaved:
+0 aborts with it, 4 without.
+
+Run the suite as `pytest -q > out 2>&1; rc=$?` and read `rc` anyway. A pipeline such
+as `pytest -q | tail -1` reports the exit status of `tail`, so it would have hidden
+that abort entirely for as long as it lasted, and it will hide the next one.
 
 ---
 

@@ -23,10 +23,20 @@ The peak scale is why that rule is written down rather than assumed. Its guards
 asserted only that confidences land in `[0, 1]` and that *some* threshold keeps a
 subset — both of which survive the fix being reverted, because clipping produces
 them — so reverting it left the suite green while the slider went inert again.
-They were rebuilt around the shape of the score distribution instead, and the
-revert now fails four tests. The lesson is the second-order one: do not write
-"every fix was verified this way" unless every fix has been. An overclaim about
-test rigour is worse than no claim, because it stops anyone checking.
+They were rebuilt around the shape of the score distribution instead, and putting
+`PEAK_SCALE["rtmw_l_384x288"]` back to `1.0` now turns seven tests red, only two
+of which need cached weights.
+
+The rule is applied, not universal, and the gap between those two words is the
+whole point. Four fixes have actually been through a revert. Restoring the
+BGR→RGB normalisation defect turns two tests red; undoing the person-filter fix
+turns twelve red; the peak scale turns seven. The fourth found a second hole:
+putting the old opacity constants back — `DASH_BELOW = 0.5`,
+`FULL_OPACITY_ABOVE = 0.8` — leaves the entire suite green, so that fix is
+currently unguarded. It is carried as an open item below. The second-order lesson
+holds: do not write "every fix was verified this way" unless every fix has been.
+An overclaim about test rigour is worse than no claim, because it stops anyone
+checking.
 
 ---
 
@@ -162,9 +172,21 @@ test rigour is worse than no claim, because it stops anyone checking.
       untransformed, so it lands at the crop's top-left corner rather than at the
       image origin. Harmless while it is hidden, but at threshold 0.0 it is drawn
       there.
-- [ ] `ruff format` would reformat 33 of 73 files. The project gates on `ruff check`,
-      which passes; decide whether to adopt the formatter and do it in one commit,
-      or say in the README that it is deliberately not used.
+- [ ] `ruff format` would reformat 34 of the 76 files under `src` and `tests`. The
+      project gates on `ruff check`, which passes; decide whether to adopt the
+      formatter and do it in one commit, or say in the README that it is
+      deliberately not used.
+- [ ] **Nothing in the suite can detect a miscalibrated opacity constant.**
+      `tests/gui/test_polish.py` derives its expectations *from* the constants it
+      is checking — `CONFIDENT = (1.0 + FULL_OPACITY_ABOVE) / 2.0`, and the dash
+      cases are written at `DASH_BELOW` and `DASH_BELOW - 0.01` — so it pins the
+      shape of `confidence_opacity` and slides along with whatever the constants
+      happen to be. Restoring the values that shipped wrong, `DASH_BELOW = 0.5`
+      and `FULL_OPACITY_ABOVE = 0.8`, leaves the whole suite green. What is
+      missing is a test against a realistic score distribution — the fixture
+      percentiles the constants were calibrated on — asserting that the dashed
+      fraction and the full-opacity fraction stay inside the intended band. Until
+      that exists, the recalibration is a fix with no guard on it.
 
 ### README, CI and release
 - [x] Rewrite the README for what v1 actually does: the window and its gestures,
@@ -180,24 +202,42 @@ test rigour is worse than no claim, because it stops anyone checking.
 - [x] `.github/workflows/ci.yml` — ruff, mypy, `pytest tests/unit`, then the GUI
       suite under `QT_QPA_PLATFORM=offscreen`. Python 3.12 only, not a matrix: a
       3.11 entry would be a guaranteed red X, since numpy's stubs will not parse
-      under it. `tests/integration` is excluded by path so CI cannot pull 464 MB
-      of weights; the in-test cache check is the backstop, not the guarantee.
-- [ ] **CI has never actually run.** The workflow file is not committed, so GitHub
-      has never seen it and it is untested against a real runner — including the
-      hand-derived list of system libraries the PySide6 wheel links against.
-      AlchemyFace shipped a publish workflow advertising "the same checks as CI"
-      that silently skipped every GUI test, and a wheel check that reported a leak
-      which did not exist because it ran from the wrong directory. Assume this one
-      is wrong until a run is green.
-- [ ] **The suite aborts after passing, in roughly two runs out of ten.** Every
-      test reports green and the summary line prints; the process then dies during
-      interpreter shutdown with `libc++abi: terminating due to uncaught exception
-      of type std::__1::system_error: recursive_mutex lock failed: Invalid
-      argument`, leaving exit status 134. A teardown fault rather than a failing
-      assertion — but an exit code is the whole of what a build system reads, so
-      this blocks a green run however sound the tests are. Under investigation.
-      Measure it as `pytest -q > out 2>&1; rc=$?`; `pytest -q | tail -1` reports
-      `tail`'s status and hides the abort completely.
+      under it. No weights are ever fetched on a runner, so the `models`-marked
+      tests skip there; the in-test cache check is the backstop, not the guarantee.
+- [x] **CI has run, and it is green.** The workflow went in with commit `e9aebc2`
+      and GitHub registered it on that same push. Three runs to date, all pushes
+      to `main`, all successful: `e9aebc2` (run 33684801971, 55s), `88a659e`
+      (33685597889, 1m 02s) and `51aba8a` (33700786465, 58s), the first two on
+      2 September and the last on 3 September, UTC. The most recent log shows
+      `ruff` clean, `mypy` with no issues across 38 source files, `tests/unit` at
+      256 passed and 2 skipped, and `tests/gui` at 162 passed. The step ahead of
+      the GUI tests printed `Qt 6.11.2 on platform offscreen`, so the hand-derived
+      list of system libraries the PySide6 wheel links against is now observed
+      rather than reasoned — a runner loaded the offscreen plugin with exactly
+      that list installed and nothing more. *(The AlchemyFace precedent that
+      prompted the suspicion — a publish workflow advertising "the same checks as
+      CI" that silently skipped every GUI test, and a wheel check reporting a leak
+      that did not exist because it ran from the wrong directory — is why the log
+      was read line by line instead of trusting the tick.)*
+- [ ] Re-run CI after the current round of workflow edits. A green tick belongs to
+      the revision that earned it: `ci.yml` has been changed since `51aba8a`, and
+      those changes have not been through a runner. Nothing is wrong with them —
+      they simply have no evidence behind them yet.
+- [x] **The shutdown abort is fixed, and it was onnxruntime telemetry.** The suite
+      used to report green, print its pass line and then die in interpreter shutdown
+      with `libc++abi: terminating due to uncaught exception of type
+      std::__1::system_error: recursive_mutex lock failed: Invalid argument`, exit
+      status 134. `lsof -a -p <pid> -i` on a bare `import onnxruntime` process shows
+      it open exactly one outbound socket — TCP 443 to an address registered to
+      Microsoft — first visible 9.5 s after the import; the exit-time teardown of the
+      telemetry log manager frees a `recursive_mutex` that an upload still in flight
+      then tries to lock. `tests/conftest.py` now sets `ORT_DISABLE_TELEMETRY=1`
+      ahead of the first onnxruntime import, which is the only moment it is read
+      (commit `f1dd076`); with it set, the process opens no socket at all. Measured
+      interleaved, 40 runs per arm on trees identical but for that one line:
+      0 aborts with it, 4 without. Keep measuring runs as
+      `pytest -q > out 2>&1; rc=$?` regardless — `pytest -q | tail -1` reports
+      `tail`'s status and would hide the next one exactly as well as it hid this one.
 - [ ] `tests/unit/test_readme.py` — assert the README names the install command,
       the launch command, the download size, the model and its licence. Prose
       about being kept current is not a mechanism; a test is.

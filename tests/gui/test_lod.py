@@ -4,15 +4,30 @@ the canvas signal that tells it the zoom moved.
 Wherever a size or a zoom is chosen to put the face in a particular band, it is
 derived from ``REGIONS_ABOVE`` and ``POINTS_ABOVE`` rather than written out as a
 copy of whatever they currently are, so retuning one number cannot silently
-invalidate a test that is not about the retune. Three plain numbers survive
-below, and none of them is a threshold in disguise: a zero extent, a zoom
-applied before any result exists, and the face the Face chip is pointed at —
-that one reframes the head to fill the viewport, so what it ends up measuring is
-the same whatever size the face was in the photograph.
+invalidate a test that is not about the retune. Confidence follows the same
+rule: the two scores below are placed either side of ``FILTERING_THRESHOLD`` by
+arithmetic, so moving that slider position moves both with it and no test can
+quietly end up asserting on a score that has drifted to the wrong side of the
+slider. Four plain numbers survive below, and none of them is a threshold in
+disguise: a zero extent, a zoom applied before any result exists, the gap that
+keeps two synthetic faces from overlapping — nothing measures it — and the face
+the Face chip is pointed at, which reframes the head to fill the viewport, so
+what it ends up measuring is the same whatever size the face was in the
+photograph.
 
 The overlay tests fix the face's size in *scene* pixels and move the zoom, which
 is the same arithmetic the real thing does.
+
+The detail level is a property of the whole frame, not of one person, and a
+one-person fixture at a threshold of zero agrees with a wrong answer as readily
+as with the right one: it cannot tell "the largest face" from "whichever face
+came first", nor a box drawn over the confident keypoints from one drawn over
+all sixty-eight regardless. Both of those are decisions the overlay actually
+makes, so the tests that pin them use ``_two_face_result``, which gives the two
+people different face sizes and lets their confidences differ.
 """
+
+from typing import NamedTuple
 
 import numpy as np
 import pytest
@@ -48,6 +63,35 @@ REGIONS_EXTENT = (REGIONS_ABOVE + POINTS_ABOVE) / 2.0
 POINTS_EXTENT = POINTS_ABOVE * 2.0
 """A face this many scene pixels across is above ``POINTS_ABOVE`` at zoom 1.0."""
 
+FACE_GAP = 10.0
+"""Clear space left between the two faces of a two-person result.
+
+Nothing measures it. The faces are put beside each other rather than on top of
+each other only so that the fixture describes something a photograph could
+contain; each person's extent is measured on its own either way.
+"""
+
+FILTERING_THRESHOLD = 0.5
+"""A confidence slider position with room for a score on either side of it.
+
+The single-face fixtures run at ``0.0``, where every score they use clears the
+slider and the overlay's confidence filter therefore cannot be observed at all.
+A test about that filter has to move the slider off the floor.
+"""
+
+CONFIDENT_SCORE = FILTERING_THRESHOLD + 0.4
+"""A score comfortably above the slider: these keypoints are drawn."""
+
+UNCONFIDENT_SCORE = FILTERING_THRESHOLD - 0.4
+"""A score comfortably below the slider: these keypoints are not drawn.
+
+Above ``0.0`` deliberately. The overlay also rejects an exact zero as the
+decoder's "no peak at all" sentinel, whatever the slider says, and a face
+filtered out by *that* rule would be filtered out of a run that never consulted
+the threshold either — which is precisely the reading a test here must not
+accept as proof.
+"""
+
 
 def _zoom_into_points(extent: float) -> float:
     """A zoom at which ``extent`` scene pixels clears ``POINTS_ABOVE`` on screen."""
@@ -59,24 +103,56 @@ def _zoom_into_contours(extent: float) -> float:
     return REGIONS_ABOVE / (2.0 * extent)
 
 
-def _face_result(extent: float) -> PoseResult:
-    """One person whose face occupies exactly ``extent`` scene pixels square.
+class _Face(NamedTuple):
+    """One synthetic face: how many scene pixels across it is, and how sure of it."""
+
+    extent: float
+    score: float
+
+
+def _person_with_face(face: _Face, origin: float = FACE_ORIGIN) -> PersonPose:
+    """One person whose face occupies exactly ``face.extent`` scene pixels square.
 
     Laid out on a diagonal rather than at random: the tests below sit on either
     side of a threshold, so the face's measured size has to be the number asked
-    for and not a sample that happened to fall short of it.
+    for and not a sample that happened to fall short of it. ``face.score`` goes
+    to all 133 keypoints, so a person is either drawn entire or not at all and a
+    count of what reached the scene is unambiguous about which people it came
+    from.
     """
     keypoints = np.zeros((133, 2), dtype=np.float32)
-    span = np.linspace(FACE_ORIGIN, FACE_ORIGIN + extent, FACE_POINTS, dtype=np.float32)
+    span = np.linspace(origin, origin + face.extent, FACE_POINTS, dtype=np.float32)
     keypoints[23:91, 0] = span
     keypoints[23:91, 1] = span
-    person = PersonPose(keypoints=keypoints, scores=np.full((133,), 0.9, dtype=np.float32))
-    frame = PoseFrame(frame_index=0, timestamp_s=None, image_size=(640, 640), people=(person,))
+    return PersonPose(keypoints=keypoints, scores=np.full((133,), face.score, dtype=np.float32))
+
+
+def _result(*people: PersonPose) -> PoseResult:
+    """A one-frame result holding ``people``, in the order given."""
+    frame = PoseFrame(frame_index=0, timestamp_s=None, image_size=(640, 640), people=people)
     return PoseResult(topology=COCO_WHOLEBODY_133, frames=(frame,), source="x", model="m")
 
 
-def _overlay(qtbot, extent: float, groups: str = "face"):  # type: ignore[no-untyped-def]
-    """An overlay showing a face ``extent`` scene pixels across, at zoom 1.0."""
+def _face_result(extent: float) -> PoseResult:
+    """One confident person, whose face is ``extent`` scene pixels across."""
+    return _result(_person_with_face(_Face(extent, CONFIDENT_SCORE)))
+
+
+def _two_face_result(first: _Face, second: _Face) -> PoseResult:
+    """Two people beside each other, in the order given.
+
+    The order is load-bearing, which is why it is a parameter rather than a
+    detail: it is what tells measuring the largest face apart from measuring
+    whichever person the loop happened to reach first.
+    """
+    return _result(
+        _person_with_face(first),
+        _person_with_face(second, origin=FACE_ORIGIN + first.extent + FACE_GAP),
+    )
+
+
+def _overlay_for(qtbot, result: PoseResult, groups: str = "face", threshold: float = 0.0):  # type: ignore[no-untyped-def]
+    """An overlay showing ``result`` at zoom 1.0, with those layers and that slider."""
     from alchemypose.gui.canvas.scene import PoseOverlay
     from alchemypose.gui.canvas.view import PoseCanvas
 
@@ -84,8 +160,13 @@ def _overlay(qtbot, extent: float, groups: str = "face"):  # type: ignore[no-unt
     qtbot.addWidget(canvas)
     canvas.set_image(np.zeros((640, 640, 3), dtype=np.uint8))
     overlay = PoseOverlay(canvas)
-    overlay.set_result(_face_result(extent), selection_for(groups), confidence_threshold=0.0)
+    overlay.set_result(result, selection_for(groups), confidence_threshold=threshold)
     return canvas, overlay
+
+
+def _overlay(qtbot, extent: float, groups: str = "face"):  # type: ignore[no-untyped-def]
+    """An overlay showing one confident face ``extent`` scene pixels across."""
+    return _overlay_for(qtbot, _face_result(extent), groups)
 
 
 def _stop_colors(bone) -> set[str]:  # type: ignore[no-untyped-def]
@@ -220,6 +301,63 @@ def test_the_body_is_never_thinned_out(qtbot) -> None:  # type: ignore[no-untype
     _, overlay = _overlay(qtbot, extent=CONTOURS_EXTENT, groups="all")
     assert overlay.face_detail is FaceDetail.CONTOURS
     assert overlay.keypoint_item_count == 133 - FACE_POINTS
+
+
+# ------------------------------------------------------- more than one face
+
+
+@pytest.mark.parametrize("large_last", [True, False], ids=["small first", "large first"])
+def test_the_level_follows_the_largest_face_not_whichever_came_first(qtbot, large_last: bool) -> None:  # type: ignore[no-untyped-def]
+    """Two confident people, one small face and one large: the large one decides.
+
+    Both orders are run, because either end of the list is a plausible wrong
+    answer. An implementation that measures the first person and stops reads
+    ``CONTOURS_EXTENT`` in the "small first" case; one that lets the last person
+    overwrite the running answer reads it in "large first". Either way it comes
+    out at ``CONTOURS`` and creates no keypoint items at all, hiding every point
+    of a face ``POINTS_EXTENT`` across — the one face on this canvas whose
+    points are far enough apart to be worth aiming at.
+    """
+    small = _Face(CONTOURS_EXTENT, CONFIDENT_SCORE)
+    large = _Face(POINTS_EXTENT, CONFIDENT_SCORE)
+    first, second = (small, large) if large_last else (large, small)
+
+    _, overlay = _overlay_for(qtbot, _two_face_result(first, second))
+
+    assert overlay.face_detail is FaceDetail.POINTS
+    assert overlay.keypoint_item_count == 2 * FACE_POINTS
+
+
+def test_a_face_under_the_confidence_threshold_cannot_raise_the_level(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """The large face here is drawn nowhere: every one of its points is under
+    the slider, so not a single item is created for it.
+
+    Measuring it regardless — a box over all sixty-eight face keypoints instead
+    of over the ones that clear the threshold — reads ``POINTS_EXTENT`` where
+    the drawn face is only ``CONTOURS_EXTENT``, climbs to ``POINTS``, and spends
+    68 keypoint items on the *small* face, the only one anybody can see, at a
+    size where its points overlap into exactly the smudge the whole trade exists
+    to avoid. The face nobody can see would have decided how the face they can
+    see is drawn.
+    """
+    seen = _Face(CONTOURS_EXTENT, CONFIDENT_SCORE)
+    unseen = _Face(POINTS_EXTENT, UNCONFIDENT_SCORE)
+
+    _, overlay = _overlay_for(
+        qtbot, _two_face_result(seen, unseen), threshold=FILTERING_THRESHOLD
+    )
+
+    assert overlay.face_detail is FaceDetail.CONTOURS
+    assert overlay.keypoint_item_count == 0
+
+    # The zero has to be the detail level's doing rather than an empty scene, or
+    # the assertion above would hold just as well for a result nothing survived:
+    # zoom until the small face alone clears POINTS_ABOVE, and its 68 points —
+    # only its 68, never the unconfident face's — appear.
+    overlay.on_zoom_changed(_zoom_into_points(CONTOURS_EXTENT))
+
+    assert overlay.face_detail is FaceDetail.POINTS
+    assert overlay.keypoint_item_count == FACE_POINTS
 
 
 # --------------------------------------------------------- when it rebuilds
