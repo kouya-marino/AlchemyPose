@@ -1,9 +1,9 @@
-"""``RTMWEngine.infer`` must build the input the pose model wants and decode with
-its peak scale — both proved without weights.
+"""``RTMWEngine.infer`` must build the input the pose model wants, decode with its
+peak scale, and answer in image pixels — all three proved without weights.
 
-Two properties of ``infer`` are only visible on real output, and real output
-needs ~486 MB of cached ONNX files that CI does not have. Both are guarded here
-instead by putting fake ONNX sessions behind the *real* engine: ``weights.ensure``
+Those properties of ``infer`` are only visible on real output, and real output
+needs ~486 MB of cached ONNX files that CI does not have. All three are guarded
+here instead by putting fake ONNX sessions behind the *real* engine: ``weights.ensure``
 never downloads, ``make_session`` hands back stubs, and everything between
 ``infer`` and the ``PersonPose`` it appends is the shipped code — the detector
 loop, the affine crop, the normalisation, the decode, the plumbing.
@@ -32,6 +32,26 @@ scale cases above green:
   with ``Got: 416 Expected: 256``, so it can never reach a user — but a stub
   swallows it, and a test that claims to drive the real engine would pass.
 
+**Where the keypoints land.** ``decode_simcc`` answers in *crop* pixels — 0..192
+by 0..256 for RTMW-m — and ``infer`` is the only thing that maps them back onto
+the photograph, through the affine ``top_down_affine`` built for that person.
+Reduce ``kp_image = affine_untransform(kp_model, affine)[0]`` to
+``kp_image = kp_model[0]`` and every skeleton collapses into a crop-sized corner
+at the top left while the boxes stay where the detector drew them; on the
+project's own two-person fixture person 0's keypoints come out at x 63..132 for
+a box at x 356..509. Nothing downstream objects — the canvas, the exporter and
+the serialiser draw whatever they are handed — and a bound like "inside the
+image" cannot object either, because crop coordinates are inside any photograph
+at least crop-sized. That is not a hypothetical: it is what the integration
+test asserted, and it stayed green through the deletion.
+
+The stub chooses which SimCC bin peaks, so the crop coordinate the decoder will
+answer is known exactly; the box handed to the detector is known too; so the
+image pixel each keypoint must arrive at is known, and the cases below assert
+that pixel rather than a range. Two people stand in the frame because the
+multi-person form of the bug — one person's affine used for everybody — leaves
+every keypoint inside the image, inside a crop, and inside *a* person.
+
 So ``_FakeSession`` records every feed and the cases below assert on it: the
 blob's shape against the size the loaded model declares, its values against the
 ImageNet arithmetic written out as literals, and its dtype and layout against
@@ -48,12 +68,13 @@ itself.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from alchemypose.core.schema import PersonPose
 from alchemypose.core.topology import COCO_WHOLEBODY_133
 from alchemypose.inference import detector as detector_module
 from alchemypose.inference import rtmw as rtmw_module
@@ -126,6 +147,77 @@ FLAT_PERSON_BOX: tuple[float, float, float, float] = (240.0, 160.0, 400.0, 320.0
 #: The constant ``letterbox`` pads with, and therefore the only value besides
 #: ``FLAT_BGR`` that may reach the detector's session.
 LETTERBOX_PAD = 114.0
+
+#: Where in the crop each keypoint's SimCC peak is planted, as a fraction of the
+#: pose model's input size along each axis; keypoint ``k`` is given entry
+#: ``k % 4``, so all 133 are checked and none of them is checked by accident.
+#:
+#: Fractions rather than pixels because the presets crop at two different sizes
+#: and the image pixel a fraction maps to does not depend on the size: a point
+#: ``f`` of the way across the padded crop is the point ``f`` of the way across
+#: the padded box, whichever model did the cropping.
+#:
+#: The four are spread over the crop so a wrong *scale* shows up and not only a
+#: wrong offset, and every one of them sits between 0.125 and 0.875 for two
+#: reasons: inside that band a keypoint is inside the person's own bounding box,
+#: so the containment case below is not just measuring the 1.25 crop padding;
+#: and none of them lands on SimCC bin 0, which is where ``decode_simcc`` puts a
+#: keypoint it found no peak for.
+CROP_FRACTIONS: tuple[tuple[float, float], ...] = (
+    (0.5, 0.5),
+    (0.125, 0.125),
+    (0.875, 0.25),
+    (0.25, 0.875),
+)
+
+
+class _Person(NamedTuple):
+    """One person standing in the geometry frame, and the crop that follows from them.
+
+    ``centre`` and ``padded`` describe the crop ``top_down_affine`` builds for
+    ``bbox``: the centre of the box, and the box's own size times the 1.25
+    padding. They are written out rather than computed, because computing them
+    would re-run the arithmetic the cases below exist to check.
+    ``test_the_person_geometry_here_is_stated_consistently`` holds the literals
+    to the box, so a typo in one cannot quietly move the target.
+    """
+
+    bbox: tuple[float, float, float, float]
+    score: float
+    centre: tuple[float, float]
+    padded: tuple[float, float]
+
+
+#: The frame the geometry cases run on, (height, width). Its only job is to be
+#: big enough to stand both people below clear of the crop-space corner — the
+#: rectangle 0..288 by 0..384 that a keypoint which never left the crop would
+#: land in (see ``test_the_people_here_stand_clear_of_the_crop_space_corner``).
+GEOMETRY_IMAGE_SIZE: tuple[int, int] = (540, 960)
+
+#: Two people, far enough apart in x that neither one's keypoints could pass for
+#: the other's. Both boxes are already 3:4 — the aspect every pose model in the
+#: registry takes — so ``top_down_affine`` only pads them, and both sit well
+#: inside the frame, so the detector's clamp to the image never moves them. The
+#: scores descend because ``YoloxDetector.detect`` returns people in that order,
+#: which is what makes "person 0" here the same person as "person 0" there.
+GEOMETRY_PEOPLE: tuple[_Person, ...] = (
+    _Person((400.0, 120.0, 520.0, 280.0), 0.93, centre=(460.0, 200.0), padded=(150.0, 200.0)),
+    _Person((640.0, 200.0, 820.0, 440.0), 0.87, centre=(730.0, 320.0), padded=(225.0, 300.0)),
+)
+
+#: How far outside their own box a keypoint may sit, as a fraction of that box's
+#: width and height. The number is ``tests/integration/test_rtmw.py``'s, which
+#: explains what the slack is for on a real photograph; here every expected
+#: keypoint is inside its box already, so the margin is pure headroom and the
+#: containment case is sharper than the fraction suggests.
+BBOX_MARGIN_FRACTION = 0.15
+
+#: How far a keypoint may miss the image pixel it is owed. The mapping is exact
+#: arithmetic on exact inputs; all that is left is the float32 the affine and its
+#: inverse are stored in, measured at 6e-5 px over the presets and people here.
+#: Every coordinate bug this file guards against is out by hundreds of pixels, so
+#: there is no reason to loosen it.
+UNTRANSFORM_TOLERANCE_PX = 1e-3
 
 
 class _FakeInput:
@@ -205,19 +297,31 @@ def _one_person_detection() -> list[NDArray[Any]]:
     return [dets, labels]
 
 
-def _detection_of(box: tuple[float, float, float, float], detector_size: int) -> list[NDArray[Any]]:
-    """The same two outputs, for a person standing at ``box`` in *source-image* pixels.
+def _detections_of(
+    boxes: tuple[tuple[float, float, float, float], ...],
+    scores: tuple[float, ...],
+    detector_size: int,
+    image: NDArray[np.uint8],
+) -> list[NDArray[Any]]:
+    """The same two outputs, for people standing at ``boxes`` in *source-image* pixels.
 
     The graph reports in letterboxed-canvas pixels and ``YoloxDetector`` divides
-    the ratio back out, so the box is scaled by the shipped ``letterbox``'s own
+    the ratio back out, so the boxes are scaled by the shipped ``letterbox``'s own
     ratio here rather than by arithmetic copied out of it: put image pixels in,
-    and the detector hands ``infer`` back the box that went in.
+    and the detector hands ``infer`` back the boxes that went in.
     """
-    _canvas, ratio = letterbox(_flat_image(), detector_size)
-    x0, y0, x1, y1 = (value * ratio for value in box)
-    dets = np.array([[[x0, y0, x1, y1, 0.93]]], dtype=np.float32)
-    labels = np.zeros((1, 1), dtype=np.int64)
+    rows: list[list[float]] = []
+    _canvas, ratio = letterbox(image, detector_size)
+    for box, score in zip(boxes, scores, strict=True):
+        rows.append([*(value * ratio for value in box), score])
+    dets = np.array([rows], dtype=np.float32)
+    labels = np.zeros((1, len(rows)), dtype=np.int64)
     return [dets, labels]
+
+
+def _detection_of(box: tuple[float, float, float, float], detector_size: int) -> list[NDArray[Any]]:
+    """One confident person at ``box``, in the flat frame."""
+    return _detections_of((box,), (0.93,), detector_size, _flat_image())
 
 
 def _simcc_pair(peaks: NDArray[np.float32], input_size: tuple[int, int]) -> list[NDArray[Any]]:
@@ -245,7 +349,10 @@ def _peaks() -> NDArray[np.float32]:
 
 
 def _engine(
-    monkeypatch: pytest.MonkeyPatch, preset: str, detection: list[NDArray[Any]] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    preset: str,
+    detection: list[NDArray[Any]] | None = None,
+    pose_outputs: list[NDArray[Any]] | None = None,
 ) -> tuple[RTMWEngine, _FakeSession, _FakeSession]:
     """The real ``RTMWEngine`` for ``preset``, with both ONNX sessions stubbed out.
 
@@ -254,7 +361,9 @@ def _engine(
     """
     det_key, pose_key = weights.PRESETS[preset]
     det_session = _FakeSession("images", detection if detection is not None else _one_person_detection())
-    pose_session = _FakeSession("input", _simcc_pair(_peaks(), weights.REGISTRY[pose_key].input_size))
+    if pose_outputs is None:
+        pose_outputs = _simcc_pair(_peaks(), weights.REGISTRY[pose_key].input_size)
+    pose_session = _FakeSession("input", pose_outputs)
 
     monkeypatch.setattr(weights, "ensure", lambda key, **_kwargs: Path(f"/nonexistent/{key}.onnx"))
     monkeypatch.setattr(detector_module, "make_session", lambda _path, **_kwargs: det_session)
@@ -298,6 +407,114 @@ def _flat_frame(monkeypatch: pytest.MonkeyPatch, preset: str) -> tuple[_FakeSess
         f"reached the pose model as this file intends, so nothing it asserts would mean anything"
     )
     return det_session, pose_session
+
+
+def _geometry_image() -> NDArray[np.uint8]:
+    """The frame the two ``GEOMETRY_PEOPLE`` stand in.
+
+    Its pixels never reach an assertion: the detector stub reports the boxes it
+    was built with and the pose stub answers the same SimCC whatever it is
+    handed, so only the size of this array matters. The fill value carries no
+    meaning at all — what does the work here is the geometry, not the picture.
+    """
+    return np.full((*GEOMETRY_IMAGE_SIZE, 3), 128, dtype=np.uint8)
+
+
+def _crop_fraction_per_keypoint() -> tuple[tuple[float, float], ...]:
+    """``CROP_FRACTIONS`` dealt out over the whole topology, one pair per keypoint."""
+    count = len(COCO_WHOLEBODY_133)
+    return tuple(CROP_FRACTIONS[index % len(CROP_FRACTIONS)] for index in range(count))
+
+
+def _simcc_across_the_crop(input_size: tuple[int, int]) -> list[NDArray[Any]]:
+    """SimCC logits that put keypoint ``k`` at ``CROP_FRACTIONS[k % 4]`` of the crop.
+
+    ``_simcc_pair`` varies the height of the peak and holds its position still;
+    this varies the position and holds the height. ``decode_simcc`` takes the
+    argmax bin and divides by the 2.0 split ratio, so a peak in bin
+    ``2 * f * size`` decodes to exactly ``f * size`` crop pixels — exactly,
+    because ``test_the_crop_fractions_here_land_on_whole_simcc_bins`` keeps every
+    one of those bins a whole number.
+    """
+    width, height = input_size
+    count = len(COCO_WHOLEBODY_133)
+    simcc_x = np.zeros((1, count, width * 2), dtype=np.float32)
+    simcc_y = np.zeros((1, count, height * 2), dtype=np.float32)
+    for index, (fraction_x, fraction_y) in enumerate(_crop_fraction_per_keypoint()):
+        simcc_x[0, index, round(fraction_x * width * 2)] = CONFIDENT_PEAK
+        simcc_y[0, index, round(fraction_y * height * 2)] = CONFIDENT_PEAK
+    return [simcc_x, simcc_y]
+
+
+def _expected_image_keypoints(person: _Person) -> NDArray[np.float32]:
+    """Where every keypoint of ``person`` must land, in source-image pixels.
+
+    The whole invariant in one line of arithmetic, and no call into the code
+    being tested: the crop is ``person.padded`` pixels of photograph centred on
+    ``person.centre``, so whatever the pose model placed ``f`` of the way across
+    the crop belongs at ``centre + (f - 0.5) * padded`` in the photograph. The
+    model's input size does not appear — a fraction of a 192-wide crop and the
+    same fraction of a 288-wide one are the same place on the person.
+    """
+    centre_x, centre_y = person.centre
+    padded_w, padded_h = person.padded
+    return np.array(
+        [
+            (centre_x + (fraction_x - 0.5) * padded_w, centre_y + (fraction_y - 0.5) * padded_h)
+            for fraction_x, fraction_y in _crop_fraction_per_keypoint()
+        ],
+        dtype=np.float32,
+    )
+
+
+def _allowed_box(person: _Person) -> tuple[float, float, float, float]:
+    """``person``'s box, grown by ``BBOX_MARGIN_FRACTION`` of its own width and height."""
+    x0, y0, x1, y1 = person.bbox
+    margin_x = BBOX_MARGIN_FRACTION * (x1 - x0)
+    margin_y = BBOX_MARGIN_FRACTION * (y1 - y0)
+    return x0 - margin_x, y0 - margin_y, x1 + margin_x, y1 + margin_y
+
+
+def _inside(keypoints: NDArray[np.float32], box: tuple[float, float, float, float]) -> NDArray[np.bool_]:
+    """Which of ``keypoints`` fall within ``box``, as a mask."""
+    x0, y0, x1, y1 = box
+    within_x = (keypoints[:, 0] >= x0) & (keypoints[:, 0] <= x1)
+    within_y = (keypoints[:, 1] >= y0) & (keypoints[:, 1] <= y1)
+    return np.asarray(within_x & within_y)
+
+
+def _geometry_frame(monkeypatch: pytest.MonkeyPatch, preset: str) -> tuple[PersonPose, ...]:
+    """Run the two ``GEOMETRY_PEOPLE`` through the real ``infer`` and hand back the poses.
+
+    The detections are placed with the preset's own detector input size and the
+    SimCC peaks with its own pose input size, so both people come back at the
+    boxes written above whichever pair of models the preset names — and the
+    keypoints they carry are the preset's own answer to the same question.
+    """
+    det_key, pose_key = weights.PRESETS[preset]
+    image = _geometry_image()
+    detection = _detections_of(
+        tuple(person.bbox for person in GEOMETRY_PEOPLE),
+        tuple(person.score for person in GEOMETRY_PEOPLE),
+        weights.REGISTRY[det_key].input_size[0],
+        image,
+    )
+    pose_outputs = _simcc_across_the_crop(weights.REGISTRY[pose_key].input_size)
+    engine, _det_session, _pose_session = _engine(monkeypatch, preset, detection, pose_outputs)
+
+    people = engine.infer(image, source="geometry").frames[0].people
+    assert len(people) == len(GEOMETRY_PEOPLE), (
+        f"{preset}: the detector stub offered {len(GEOMETRY_PEOPLE)} people and infer came back "
+        f"with {len(people)}. Every case below reads person by person, so a frame with the wrong "
+        f"people in it would be checking someone who is not there"
+    )
+    for index, (person, want) in enumerate(zip(people, GEOMETRY_PEOPLE, strict=True)):
+        assert person.bbox is not None and person.bbox == pytest.approx(want.bbox, abs=1e-3), (
+            f"{preset}: person {index} came back at {person.bbox}, not the {want.bbox} this file "
+            f"fed the detector — and the keypoints expected of them are worked out from that box, "
+            f"so they would be measured against the wrong crop"
+        )
+    return people
 
 
 # --------------------------------------------------------------------------
@@ -514,3 +731,228 @@ def test_the_presets_exercised_here_span_more_than_one_peak_scale() -> None:
         f"every preset now decodes at the same peak scale {scales}, so nothing above can tell a "
         f"per-model scale apart from a hard-coded constant"
     )
+
+
+# --------------------------------------------------------------------------
+# Where the keypoints end up. The decoder answers in crop pixels; infer is the
+# only thing that turns them into the image pixels PersonPose.space_2d
+# promises, and nothing downstream can tell the two apart.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("preset", sorted(weights.PRESETS))
+def test_infer_returns_keypoints_in_image_pixels_not_crop_pixels(
+    monkeypatch: pytest.MonkeyPatch, preset: str
+) -> None:
+    """Every keypoint must arrive at the one image pixel its crop position maps to.
+
+    There is a single right answer per keypoint here, so this asserts the pixel
+    rather than a range. The pose stub decides which SimCC bin peaks, which
+    fixes where in the crop ``decode_simcc`` will place each keypoint; the
+    detector stub decides where the person stands, which fixes what that crop
+    is; between them they fix the image pixel the keypoint is owed, and
+    ``_expected_image_keypoints`` states it in one line that never calls the
+    transform being checked.
+
+    A bound would not do. "Inside the image" is what the integration test
+    asserted, and crop coordinates satisfy it on any photograph at least
+    crop-sized — which is why deleting the untransform moved every skeleton into
+    a corner of the frame without turning anything red. Both people here stand
+    clear of that corner, so crop coordinates cannot satisfy this case for
+    either of them, and an affine applied inverted throws the points out the
+    other side.
+    """
+    in_w, in_h = weights.REGISTRY[weights.PRESETS[preset][1]].input_size
+    people = _geometry_frame(monkeypatch, preset)
+
+    for index, (person, want_person) in enumerate(zip(people, GEOMETRY_PEOPLE, strict=True)):
+        want = _expected_image_keypoints(want_person)
+        missed = np.abs(person.keypoints - want).max(axis=1)
+        worst = int(np.argmax(missed))
+        fraction_x, fraction_y = _crop_fraction_per_keypoint()[worst]
+        assert float(missed.max()) <= UNTRANSFORM_TOLERANCE_PX, (
+            f"{preset}: person {index} was detected at {want_person.bbox}, so their crop is the "
+            f"{want_person.padded} pixels of photograph centred on {want_person.centre}. The pose "
+            f"stub put keypoint {worst}'s peak at ({fraction_x}, {fraction_y}) of that crop — "
+            f"({fraction_x * in_w:g}, {fraction_y * in_h:g}) in crop pixels — which is "
+            f"({want[worst][0]:g}, {want[worst][1]:g}) in the image. infer returned "
+            f"({person.keypoints[worst][0]:g}, {person.keypoints[worst][1]:g}), out by "
+            f"{float(missed.max()):.4f} px, and {int((missed > UNTRANSFORM_TOLERANCE_PX).sum())} of "
+            f"{missed.size} keypoints missed. PersonPose.space_2d promises IMAGE_PX: a keypoint "
+            f"still in crop coordinates means the untransform is gone, one thrown clear of the "
+            f"frame means the affine was applied the wrong way round"
+        )
+
+
+@pytest.mark.parametrize("preset", sorted(weights.PRESETS))
+def test_infer_untransforms_each_person_with_their_own_crop(
+    monkeypatch: pytest.MonkeyPatch, preset: str
+) -> None:
+    """A keypoint must land inside the person it describes, and outside everybody else.
+
+    The portable half of the case above, and the one
+    ``tests/integration/test_rtmw.py`` makes against real weights on a real
+    photograph: a keypoint is a claim about the person whose crop produced it,
+    so it belongs inside that person's box — give or take
+    ``BBOX_MARGIN_FRACTION``, which is pure headroom here because every expected
+    keypoint is inside the box already — and nowhere near anyone else's.
+
+    This is the multi-person face of the same defect. Hoist ``affine`` out of
+    ``infer``'s loop, or index it by anything other than the person being
+    decoded, and two people trade skeletons while every keypoint stays inside
+    the image, inside a real crop, and inside a real person. The case above
+    states more, but only about the frame this file builds; this one is the
+    invariant that keeps its meaning on any photograph.
+    """
+    people = _geometry_frame(monkeypatch, preset)
+
+    for index, person in enumerate(people):
+        for other, want_person in enumerate(GEOMETRY_PEOPLE):
+            box = _allowed_box(want_person)
+            inside = _inside(person.keypoints, box)
+            if other == index:
+                escaped = np.flatnonzero(~inside)
+                first = person.keypoints[escaped[0]] if escaped.size else person.keypoints[0]
+                assert escaped.size == 0, (
+                    f"{preset}: {escaped.size} of person {index}'s {inside.size} keypoints are "
+                    f"outside their own box {want_person.bbox}, widened by "
+                    f"{BBOX_MARGIN_FRACTION:.0%} of its own size to "
+                    f"{tuple(round(value, 2) for value in box)}. The first is keypoint "
+                    f"{int(escaped[0])} at ({first[0]:g}, {first[1]:g}). Every one of them was "
+                    f"decoded from inside this person's crop, so it can only leave this person's "
+                    f"box if infer mapped it back with the wrong transform"
+                )
+            else:
+                trespassing = np.flatnonzero(inside)
+                first = person.keypoints[trespassing[0]] if trespassing.size else person.keypoints[0]
+                assert trespassing.size == 0, (
+                    f"{preset}: {trespassing.size} of person {index}'s keypoints landed inside "
+                    f"person {other}'s box {want_person.bbox}. The first is keypoint "
+                    f"{int(trespassing[0])} at ({first[0]:g}, {first[1]:g}), and person {index} "
+                    f"stands at {GEOMETRY_PEOPLE[index].bbox}. infer is untransforming this person "
+                    f"with somebody else's affine: the skeletons have been swapped, and neither "
+                    f"the image bounds nor the confidences would show it"
+                )
+
+
+def test_the_crop_fractions_here_land_on_whole_simcc_bins() -> None:
+    """Off a whole bin, the crop position the decoder answers is not the one expected.
+
+    ``_simcc_across_the_crop`` plants keypoint ``k``'s peak in bin
+    ``2 * f * size`` and ``decode_simcc`` divides the argmax by the 2.0 split
+    ratio, so the decoded position is ``f * size`` crop pixels only while that
+    bin is a whole number. Every pose model's input size is checked here,
+    because a model added at a size these fractions do not divide would leave
+    every expectation in this section quietly rounded.
+    """
+    for _det_key, pose_key in weights.PRESETS.values():
+        input_size = weights.REGISTRY[pose_key].input_size
+        for fractions in CROP_FRACTIONS:
+            for axis, size in enumerate(input_size):
+                bin_index = fractions[axis] * size * 2
+                assert bin_index == int(bin_index) and 0 < bin_index < size * 2, (
+                    f"{pose_key} takes {input_size} (width, height), so the fraction "
+                    f"{fractions[axis]} on axis {axis} asks for SimCC bin {bin_index} of "
+                    f"{size * 2}. It has to be a whole bin, and strictly inside the row: bin 0 is "
+                    f"where decode_simcc parks a keypoint it found no peak for, so a probe placed "
+                    f"there would make a missing peak look like a correct answer"
+                )
+
+
+def test_the_person_geometry_here_is_stated_consistently() -> None:
+    """The literals above must still describe the boxes, and the boxes the models.
+
+    Everything the two cases above lean on and neither of them says: every pose
+    model crops at 3:4, so a box already at 3:4 is padded and never widened;
+    ``centre`` and ``padded`` follow from the box and that 1.25 padding; both
+    boxes sit inside the frame, so the detector's clamp to the image never moves
+    them; the scores descend, so the order people come back in is the order they
+    are written in; every expected keypoint is inside its own person's box,
+    without which the containment case would be measuring the crop padding
+    rather than the transform; and no two people's allowed boxes touch, without
+    which "inside mine, outside theirs" could not fail.
+    """
+    height, width = GEOMETRY_IMAGE_SIZE
+    for _det_key, pose_key in weights.PRESETS.values():
+        in_w, in_h = weights.REGISTRY[pose_key].input_size
+        assert in_w / in_h == 0.75, (
+            f"{pose_key} now crops at {(in_w, in_h)} — an aspect of {in_w / in_h:.4f}, not the 3:4 "
+            f"every box here is drawn at. top_down_affine would widen these boxes to suit it, the "
+            f"padded sizes written above would stop being the crop, and every expected keypoint "
+            f"would be wrong"
+        )
+
+    scores = [person.score for person in GEOMETRY_PEOPLE]
+    assert scores == sorted(scores, reverse=True) and len(set(scores)) == len(scores), (
+        f"the detection scores {scores} are not strictly descending. YoloxDetector.detect returns "
+        f"people best score first, which is what makes person N in the result the same person as "
+        f"person N in GEOMETRY_PEOPLE; equal scores would leave that pairing to a sort"
+    )
+
+    assert len(GEOMETRY_PEOPLE) > 1, (
+        "one person in the frame cannot show a crossed affine — infer would untransform them with "
+        "their own crop whichever person's affine it reached for"
+    )
+
+    for index, person in enumerate(GEOMETRY_PEOPLE):
+        x0, y0, x1, y1 = person.bbox
+        box_w, box_h = x1 - x0, y1 - y0
+        assert 0.0 < x0 < x1 < float(width) and 0.0 < y0 < y1 < float(height), (
+            f"person {index}'s box {person.bbox} is not inside the {(width, height)} frame. "
+            f"YoloxDetector clamps a box to the image, so a box hanging over the edge would come "
+            f"back a different shape and the crop expected of it would be the wrong crop"
+        )
+        assert box_w / box_h == 0.75, (
+            f"person {index}'s box {person.bbox} is {box_w} x {box_h}, an aspect of "
+            f"{box_w / box_h:.4f} rather than 3:4. top_down_affine would widen it to the model's "
+            f"aspect before padding, so padded={person.padded} would no longer be the crop size"
+        )
+        assert person.centre == ((x0 + x1) / 2.0, (y0 + y1) / 2.0), (
+            f"person {index} is written with centre={person.centre}, but the centre of "
+            f"{person.bbox} is {((x0 + x1) / 2.0, (y0 + y1) / 2.0)}"
+        )
+        assert person.padded == (box_w * 1.25, box_h * 1.25), (
+            f"person {index} is written with padded={person.padded}, but top_down_affine pads by "
+            f"1.25, which makes the crop of {person.bbox} {(box_w * 1.25, box_h * 1.25)} pixels"
+        )
+        outside = np.flatnonzero(~_inside(_expected_image_keypoints(person), person.bbox))
+        assert outside.size == 0, (
+            f"{outside.size} of the keypoints expected of person {index} fall outside their own "
+            f"box {person.bbox} — keypoint {int(outside[0])} first. CROP_FRACTIONS has strayed "
+            f"outside 0.125..0.875, and the containment case is now measuring how far the 1.25 "
+            f"crop padding reaches instead of where the transform put anything"
+        )
+        for other in GEOMETRY_PEOPLE[index + 1 :]:
+            mine, theirs = _allowed_box(person), _allowed_box(other)
+            assert (
+                mine[2] < theirs[0] or theirs[2] < mine[0] or mine[3] < theirs[1] or theirs[3] < mine[1]
+            ), (
+                f"the boxes {person.bbox} and {other.bbox}, each widened by "
+                f"{BBOX_MARGIN_FRACTION:.0%}, overlap. A keypoint could then be inside both people "
+                f"at once, and the half of the containment case that says a keypoint is outside "
+                f"everybody else could not fail"
+            )
+
+
+def test_the_people_here_stand_clear_of_the_crop_space_corner() -> None:
+    """A keypoint that never left the crop must not be able to pass for anyone's.
+
+    This is what makes the untransform checkable at all, and it is exactly what
+    the integration test's old bound was missing. ``decode_simcc`` answers
+    somewhere in 0..input width by 0..input height — the top-left corner of any
+    photograph big enough to crop from — so if that rectangle reached a person's
+    box, keypoints that were never mapped out of crop space would sit inside
+    that person, the containment case would pass on them, and the defect would
+    be back behind a test that cannot see it.
+    """
+    for _det_key, pose_key in weights.PRESETS.values():
+        in_w, in_h = weights.REGISTRY[pose_key].input_size
+        for index, person in enumerate(GEOMETRY_PEOPLE):
+            allowed = _allowed_box(person)
+            assert allowed[0] > in_w or allowed[1] > in_h, (
+                f"{pose_key} decodes into 0..{in_w} by 0..{in_h}, which reaches into the box "
+                f"person {index} is allowed, {tuple(round(value, 2) for value in allowed)}. Stand "
+                f"them further from the top-left corner of the frame: as written, a keypoint left "
+                f"in crop coordinates could land inside this person and the containment case would "
+                f"pass on a missing untransform"
+            )

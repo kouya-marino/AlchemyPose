@@ -8,12 +8,15 @@ invalidate a test that is not about the retune. Confidence follows the same
 rule: the two scores below are placed either side of ``FILTERING_THRESHOLD`` by
 arithmetic, so moving that slider position moves both with it and no test can
 quietly end up asserting on a score that has drifted to the wrong side of the
-slider. Four plain numbers survive among the fixtures below, and none of those
+slider. Six plain numbers survive among the fixtures below, and none of those
 is a threshold in disguise: a zero extent, a zoom applied before any result
 exists, the gap that keeps two synthetic faces from overlapping — nothing
-measures it — and the face the Face chip is pointed at, which reframes the head
-to fill the viewport, so what it ends up measuring is the same whatever size the
-face was in the photograph.
+measures it — the face the Face chip is pointed at, which reframes the head to
+fill the viewport, so what it ends up measuring is the same whatever size the
+face was in the photograph, and the pair that says how far from square the
+oblong faces are and how lopsidedly they sit across a threshold, which is a
+shape and not a size: both resolve to fractions of whatever the thresholds
+happen to be, so they slide with them like everything else here.
 
 Derivation alone cannot tell 80 and 200 from 8 and 20: divide both thresholds by
 ten and every derived size divides with them, so the whole file slides and goes
@@ -35,6 +38,30 @@ came first", nor a box drawn over the confident keypoints from one drawn over
 all sixty-eight regardless. Both of those are decisions the overlay actually
 makes, so the tests that pin them use ``_two_face_result``, which gives the two
 people different face sizes and lets their confidences differ.
+
+A *square* face is the other fixture that cannot tell a right answer from a
+wrong one. What the overlay measures is specified as the face's
+longest on-screen edge, and on a square the longest edge, the shortest edge, the
+width, the height and any average of the two extents are all the same number:
+five measures, one answer, four of them wrong and none of them showing it. So two of the faces below are
+deliberately oblong — one clearly wider than tall, one clearly taller than wide,
+each with its long edge over a threshold and its short edge under it. The
+longest edge earns the detail; measuring the shortest loses it on both of them,
+the width alone loses it on the tall one, and the height alone on the wide one.
+So does averaging the two, which is why the edges are placed lopsidedly rather
+than symmetrically about the threshold — a symmetric pair hands every average
+the boundary, and the boundary is admitted. ``_straddling`` has the arithmetic.
+
+Real faces are oblong, which is why this is worth fixtures of its own: RTMW on
+the project's own ``tests/integration/fixtures/two_people.jpg`` measures faces
+of 42.4 x 37.3 and 33.8 x 29.1 pixels under the ``lite`` preset, and 40.0 x 34.7
+and 33.0 x 25.7 under ``performance`` — between an eighth and a quarter off
+square, before anyone turns their head. Every wrong measure errs downwards, and
+downwards is the direction that costs a person something: the face that should
+be showing its points draws contours instead. On the first of those faces the
+shortest edge does not reach ``POINTS_ABOVE`` until 5.4x zoom, where the longest
+reaches it at 4.7x — the points arrive late, and nothing but a non-square
+fixture notices.
 """
 
 from typing import NamedTuple
@@ -73,6 +100,28 @@ REGIONS_EXTENT = (REGIONS_ABOVE + POINTS_ABOVE) / 2.0
 
 POINTS_EXTENT = POINTS_ABOVE * 2.0
 """A face this many scene pixels across is above ``POINTS_ABOVE`` at zoom 1.0."""
+
+OBLONG_MARGIN = 0.2
+"""How far above a threshold the long edge of an oblong face is put.
+
+A fraction of the threshold rather than a count of pixels, so the pair slides
+with a retune and neither edge can drift to the wrong side of the boundary it
+was chosen to straddle. The question a fixture answers here is *which edge is
+measured*, and a wide margin keeps that from turning into a question about
+rounding.
+"""
+
+SHORT_EDGE_DROP = 2.5
+"""How far *below* a threshold the short edge goes, in ``OBLONG_MARGIN``s.
+
+Not one. Symmetric edges have the threshold itself as their arithmetic mean,
+bit for bit, and the threshold is admitted — ``_straddling`` has the arithmetic
+and the reason it matters. The root mean square is the last of the averages to
+fall, and at the margin above it clears the boundary until this factor passes
+about 1.26; two and a half is nearly double that, so the exclusion holds with
+room rather than by a rounding error. It leaves the long edge two and two fifths times the short:
+further from square than a detection usually is, and deliberately so.
+"""
 
 FACE_GAP = 10.0
 """Clear space left between the two faces of a two-person result.
@@ -114,28 +163,84 @@ def _zoom_into_contours(extent: float) -> float:
     return REGIONS_ABOVE / (2.0 * extent)
 
 
+def _straddling(threshold: float) -> tuple[float, float]:
+    """The long and short edges of an oblong face, either side of ``threshold``.
+
+    Scene pixels, at zoom 1.0. The long one is the only one that may earn the
+    level above ``threshold``; whichever of the plausible measures reads the
+    short one instead comes out a whole band lower.
+
+    The two are placed *asymmetrically* about the threshold on purpose, and
+    tidying them back into symmetry would quietly retire the tests below. Put
+    them symmetrically — ``threshold * (1 + m)`` and ``threshold * (1 - m)`` —
+    and their arithmetic mean is the threshold exactly, for every ``m``:
+    ``((1 + m) + (1 - m)) / 2 == 1``, so no choice of margin escapes it. The
+    detail bands admit their boundary, so an overlay that measured a face by
+    the *average* of its two extents rather than by its longest edge would land
+    on the threshold and be let through. That is the same wrong answer as
+    measuring the shortest edge — a turned head losing the detail its size has
+    earned — just smaller, and these fixtures exist to catch exactly that
+    class. A symmetric straddle is the one placement that cannot: it is where
+    every one of those averages comes out right by accident.
+
+    Dropping the short edge ``SHORT_EDGE_DROP`` times as far below the
+    threshold as the long edge sits above it puts every central tendency of the
+    pair under the boundary. With the thresholds where they stand, the points
+    band is straddled by 240 and 100 — arithmetic mean 170, geometric mean
+    154.9, root mean square 183.8, none of them reaching 200 — and the regions
+    band by 96 and 40, for 68, 62.0 and 73.5 against 80. Only the longest edge,
+    240 and 96, reaches its threshold at all, which is the whole claim.
+    """
+    return threshold * (1.0 + OBLONG_MARGIN), threshold * (1.0 - SHORT_EDGE_DROP * OBLONG_MARGIN)
+
+
 class _Face(NamedTuple):
-    """One synthetic face: how many scene pixels across it is, and how sure of it."""
+    """One synthetic face: how many scene pixels across and down it is, and how
+    sure of it.
+
+    ``height`` is optional because most of the tests here are about a size
+    rather than a shape, and a square says that in one number. The ones that
+    are about the shape give both.
+    """
 
     extent: float
     score: float
+    height: float | None = None
 
 
 def _person_with_face(face: _Face, origin: float = FACE_ORIGIN) -> PersonPose:
-    """One person whose face occupies exactly ``face.extent`` scene pixels square.
+    """One person whose face occupies exactly ``face.extent`` scene pixels across
+    and ``face.height`` down — square, at ``face.extent``, unless a height is given.
 
-    Laid out on a diagonal rather than at random: the tests below sit on either
-    side of a threshold, so the face's measured size has to be the number asked
-    for and not a sample that happened to fall short of it. ``face.score`` goes
-    to all 133 keypoints, so a person is either drawn entire or not at all and a
-    count of what reached the scene is unambiguous about which people it came
-    from.
+    Laid out on a diagonal of that box rather than at random: the tests below sit
+    on either side of a threshold, so the face's measured size has to be the
+    number asked for and not a sample that happened to fall short of it. The two
+    axes are spanned separately, so an oblong face is oblong by exactly the two
+    numbers it was built from and its width and its height can be put in
+    different bands — which is the only arrangement that tells the longest edge
+    apart from the shortest, from the width and from the height. ``face.score``
+    goes to all 133 keypoints, so a person is either drawn entire or not at all
+    and a count of what reached the scene is unambiguous about which people it
+    came from.
     """
     keypoints = np.zeros((133, 2), dtype=np.float32)
-    span = np.linspace(origin, origin + face.extent, FACE_POINTS, dtype=np.float32)
-    keypoints[23:91, 0] = span
-    keypoints[23:91, 1] = span
+    down = face.extent if face.height is None else face.height
+    keypoints[23:91, 0] = np.linspace(origin, origin + face.extent, FACE_POINTS, dtype=np.float32)
+    keypoints[23:91, 1] = np.linspace(origin, origin + down, FACE_POINTS, dtype=np.float32)
     return PersonPose(keypoints=keypoints, scores=np.full((133,), face.score, dtype=np.float32))
+
+
+def _oblong_face(threshold: float, *, wider_than_tall: bool) -> _Face:
+    """A confident face straddling ``threshold``: long edge over it, short edge under.
+
+    The orientation is a parameter rather than two fixtures because the wrong
+    answers are not symmetric — reading the width alone is right on the wide
+    face and wrong on the tall one, reading the height alone the other way
+    about, and only running both catches either.
+    """
+    long_edge, short_edge = _straddling(threshold)
+    across, down = (long_edge, short_edge) if wider_than_tall else (short_edge, long_edge)
+    return _Face(across, CONFIDENT_SCORE, down)
 
 
 def _result(*people: PersonPose) -> PoseResult:
@@ -418,6 +523,101 @@ def test_the_body_is_never_thinned_out(qtbot) -> None:  # type: ignore[no-untype
     _, overlay = _overlay(qtbot, extent=CONTOURS_EXTENT, groups="all")
     assert overlay.face_detail is FaceDetail.CONTOURS
     assert overlay.keypoint_item_count == 133 - FACE_POINTS
+
+
+# ------------------------------------------------------ a face that is not square
+
+
+def test_the_oblong_fixtures_keep_their_shape_and_their_lopsided_straddle() -> None:
+    """The fixture is the test, here, so it is worth assertions of its own.
+
+    Every size test in this file would go on passing if ``_person_with_face``
+    quietly went back to laying one span down both axes: the oblong faces would
+    become squares, five different measures of them would agree again, and the
+    two tests below would be asserting nothing about which edge is measured.
+    That is a change of one line in a helper, and this is what notices it.
+
+    Where the two edges are *placed* is load-bearing in the same way and fails
+    the same way — silently. Edges put symmetrically about a threshold average
+    to it exactly, and the bands admit their boundary, so a measure that
+    averaged the two extents of a face instead of taking the longer would pass
+    both tests below while losing a turned head the detail its size earned. So
+    the three averages anyone would reach for are checked against both
+    thresholds here, in the fixture, where a tidy back to symmetry fails
+    outright rather than leaving two tests that have stopped asking anything.
+    """
+    long_edge, short_edge = _straddling(POINTS_ABOVE)
+    wide = _person_with_face(_oblong_face(POINTS_ABOVE, wider_than_tall=True))
+    tall = _person_with_face(_oblong_face(POINTS_ABOVE, wider_than_tall=False))
+    square = _person_with_face(_Face(POINTS_EXTENT, CONFIDENT_SCORE))
+
+    for person, across, down in ((wide, long_edge, short_edge), (tall, short_edge, long_edge)):
+        xs = person.keypoints[23:91, 0]
+        ys = person.keypoints[23:91, 1]
+        assert float(xs.max() - xs.min()) == pytest.approx(across, rel=1e-5)
+        assert float(ys.max() - ys.min()) == pytest.approx(down, rel=1e-5)
+
+    xs = square.keypoints[23:91, 0]
+    ys = square.keypoints[23:91, 1]
+    assert float(xs.max() - xs.min()) == pytest.approx(float(ys.max() - ys.min()), rel=1e-5)
+
+    symmetric = "the edges are symmetric about it again, and any averaging measure is admitted"
+    for threshold in (REGIONS_ABOVE, POINTS_ABOVE):
+        longer, shorter = _straddling(threshold)
+        assert shorter < threshold <= longer, f"{threshold} is no longer straddled"
+        assert (longer + shorter) / 2.0 < threshold, f"their arithmetic mean reaches {threshold}: {symmetric}"
+        assert (longer * shorter) ** 0.5 < threshold, f"their geometric mean reaches {threshold}: {symmetric}"
+        assert ((longer**2 + shorter**2) / 2.0) ** 0.5 < threshold, f"their RMS reaches {threshold}: {symmetric}"
+
+
+@pytest.mark.parametrize("wider_than_tall", [True, False], ids=["wider than tall", "taller than wide"])
+def test_an_oblong_face_earns_its_points_on_its_longest_edge(qtbot, wider_than_tall: bool) -> None:  # type: ignore[no-untyped-def]
+    """A head in profile is not a smaller head, and neither is one tilted back.
+
+    The face here spans ``POINTS_ABOVE`` the long way and falls short of it the
+    short way, so what the overlay measures decides whether sixty-eight points
+    appear or none do. The longest edge is the specified measure and gives the
+    points. The shortest gives contours on both orientations; the width alone
+    gives them on the taller-than-wide face and the height alone on the
+    wider-than-tall one; so does any average of the two edges, which the
+    lopsided straddle is what excludes — each of them a face rendered as
+    outlines at a size where its points are a comfortable hit radius apart, and
+    each of them invisible to a square fixture.
+    """
+    long_edge, short_edge = _straddling(POINTS_ABOVE)
+    assert short_edge < POINTS_ABOVE <= long_edge, "the fixture stopped straddling the threshold"
+
+    _, overlay = _overlay_for(
+        qtbot, _result(_person_with_face(_oblong_face(POINTS_ABOVE, wider_than_tall=wider_than_tall)))
+    )
+
+    assert overlay.face_detail is FaceDetail.POINTS
+    assert overlay.keypoint_item_count == FACE_POINTS
+
+
+@pytest.mark.parametrize("wider_than_tall", [True, False], ids=["wider than tall", "taller than wide"])
+def test_an_oblong_face_earns_its_region_colours_on_its_longest_edge(qtbot, wider_than_tall: bool) -> None:  # type: ignore[no-untyped-def]
+    """The same question at the lower threshold, where the answer is a colour.
+
+    Neither band draws points, so the count says nothing here and the palette
+    says everything: over ``REGIONS_ABOVE`` the contours separate brows, eyes,
+    nose and lips by colour, and under it they are one neutral grey. A face
+    that clears the threshold the long way and not the short way is coloured by
+    region — unless what was measured was the short way, or some average of the
+    two ways, in which case the user is looking at a grey outline of a face big
+    enough to read.
+    """
+    long_edge, short_edge = _straddling(REGIONS_ABOVE)
+    assert short_edge < REGIONS_ABOVE <= long_edge, "the fixture stopped straddling the threshold"
+
+    _, overlay = _overlay_for(
+        qtbot, _result(_person_with_face(_oblong_face(REGIONS_ABOVE, wider_than_tall=wider_than_tall)))
+    )
+
+    assert overlay.face_detail is FaceDetail.REGIONS
+    assert overlay.keypoint_item_count == 0
+    painted = {color for bone in overlay.bone_items for color in _stop_colors(bone)}
+    assert painted == set(REGION_COLORS.values())
 
 
 # ------------------------------------------------------- more than one face
