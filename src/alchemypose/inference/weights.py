@@ -50,9 +50,12 @@ class ModelSpec:
     input_size: tuple[int, int]  # (width, height) the model expects
 
 
-#: Every URL below was fetched and every digest measured by hand (see
-#: ``tests/unit/test_weights.py`` and the task report) — none of this is
-#: copied from a third party's manifest.
+#: Every URL below was fetched and every digest measured by hand — none of it
+#: copied from a third party's manifest. Each ``sha256`` is the hash of the
+#: ``.onnx`` member extracted from the zip at ``url``, not of the zip itself, so
+#: re-deriving one means downloading the archive and hashing exactly what
+#: ``_download`` pulls out of it. ``tests/unit/test_weights.py`` guards the
+#: shape of every entry below.
 REGISTRY: dict[str, ModelSpec] = {
     "yolox_nano": ModelSpec(
         key="yolox_nano",
