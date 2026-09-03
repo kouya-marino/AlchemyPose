@@ -28,8 +28,32 @@ already running, and a process calling it still aborts at the same rate.
 
 ``setdefault`` leaves an explicit setting alone, so a run that wants telemetry
 back can just ask for it in the environment.
+
+The ordering is the fragile half, and it breaks quietly in both directions.
+Setting the variable after the first import is a no-op rather than an error:
+onnxruntime has already read it, the uploader is already running, and nothing
+raises or warns. The edit that gets it wrong is an ordinary one — a helper
+added to this file that imports, say, ``alchemypose.inference.session``, put up
+with the other imports at the top where imports belong, drags onnxruntime in
+above the ``setdefault`` below. Linting does not catch that either: ruff's E402
+exempts an import placed after an ``os.environ`` mutation, so both orderings
+pass ``ruff check`` and only the broken one is silent. Measured on this
+machine, by counting the process's OS threads after importing onnxruntime: set
+before the import, 1; set after it, 3 — the same as never setting it at all.
+
+``ORT_ALREADY_IMPORTED`` is what makes that observable. Once the interpreter
+has moved on, no later code can reconstruct whether the variable won the race,
+because the environment looks identical either way. Sampling it on the line
+above the ``setdefault`` is the only moment the answer still exists, and
+``tests/unit/test_suite_environment.py`` asserts on it.
 """
 
 import os
+import sys
+
+#: Whether onnxruntime had already been imported by the time this module got to
+#: set the variable below — the fact the environment stops recording a moment
+#: later. Asserted in ``tests/unit/test_suite_environment.py``.
+ORT_ALREADY_IMPORTED = "onnxruntime" in sys.modules
 
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")

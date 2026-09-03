@@ -8,12 +8,22 @@ invalidate a test that is not about the retune. Confidence follows the same
 rule: the two scores below are placed either side of ``FILTERING_THRESHOLD`` by
 arithmetic, so moving that slider position moves both with it and no test can
 quietly end up asserting on a score that has drifted to the wrong side of the
-slider. Four plain numbers survive below, and none of them is a threshold in
-disguise: a zero extent, a zoom applied before any result exists, the gap that
-keeps two synthetic faces from overlapping — nothing measures it — and the face
-the Face chip is pointed at, which reframes the head to fill the viewport, so
-what it ends up measuring is the same whatever size the face was in the
-photograph.
+slider. Four plain numbers survive among the fixtures below, and none of those
+is a threshold in disguise: a zero extent, a zoom applied before any result
+exists, the gap that keeps two synthetic faces from overlapping — nothing
+measures it — and the face the Face chip is pointed at, which reframes the head
+to fill the viewport, so what it ends up measuring is the same whatever size the
+face was in the photograph.
+
+Derivation alone cannot tell 80 and 200 from 8 and 20: divide both thresholds by
+ten and every derived size divides with them, so the whole file slides and goes
+on agreeing while an 80 px face renders all sixty-eight of its points. The tests
+under "the values themselves" are the counterweight, and the one place here that
+writes the thresholds out. They say their sizes in plain screen pixels on
+purpose — 60 px is a thumbnail whatever the constants happen to be. Do not tidy
+those literals into expressions over ``REGIONS_ABOVE`` and ``POINTS_ABOVE``: the
+tidying would take away the only thing holding the numbers where a face is
+legible before its individual points appear.
 
 The overlay tests fix the face's size in *scene* pixels and move the zoom, which
 is the same arithmetic the real thing does.
@@ -37,6 +47,7 @@ from alchemypose.core.presets import selection_for, selection_from_groups
 from alchemypose.core.schema import PersonPose, PoseFrame, PoseResult
 from alchemypose.core.topology import COCO_WHOLEBODY_133, RENDER_GROUPS
 from alchemypose.gui import theme
+from alchemypose.gui.canvas.items import HIT_RADIUS
 from alchemypose.gui.canvas.lod import (
     POINTS_ABOVE,
     REGION_COLORS,
@@ -233,6 +244,112 @@ def test_the_face_is_recognised_by_group_name_not_by_index() -> None:
 def test_every_face_render_group_has_a_region_colour_and_nothing_else_does() -> None:
     """A new face group added to the topology must not fall back to grey unnoticed."""
     assert set(REGION_COLORS) == {name for name in RENDER_GROUPS if is_face_group(name)}
+
+
+# ------------------------------------------------------ the values themselves
+
+
+def test_the_thresholds_are_the_pixel_sizes_they_were_chosen_to_be() -> None:
+    """The one place in this file that writes the two numbers out.
+
+    Everything else derives its sizes from them, deliberately, so that retuning a
+    threshold cannot break a test that is not about the retune. What derivation
+    costs is that it slides: set the pair to 8 and 20 — a tenfold error in both —
+    and every band test above still passes, while an 80 px face, a thumbnail,
+    spends 68 keypoint items on points that land a pixel apart. That is exactly
+    the grey smudge with a jaw around it the three levels exist to avoid.
+
+    The two numbers are perceptual claims, not settings:
+
+    * 80 px is about where a face stops being one blob and its brows, eyes, nose
+      and lips separate far enough for five colours to describe parts, rather
+      than stain the same smudge five ways.
+    * 200 px is where the 68 dots become targets instead of decoration — held to
+      the hit radius that makes that true by the test below.
+
+    Between them they say a face is legible *before* its individual points
+    appear, which is the ordering the whole trade rests on. Retuning either one
+    changes what a person sees, so it should cost this line: move it having
+    re-read the two claims, not by discovering afterwards that a fixture drifted
+    and quietly took the thresholds along with it.
+    """
+    moved = "moved: re-read the reasoning above, then change this line on purpose"
+    assert REGIONS_ABOVE == 80.0, f"REGIONS_ABOVE {moved}"
+    assert POINTS_ABOVE == 200.0, f"POINTS_ABOVE {moved}"
+
+
+def test_the_points_wait_until_they_are_further_apart_than_the_hit_radius() -> None:
+    """Why 200 px and not 20: ``POINTS_ABOVE`` answers to ``HIT_RADIUS``.
+
+    The jaw's 17 points span the face's whole width, so a face ``W`` px across
+    puts neighbouring points about ``W / 16`` apart — an underestimate, the jaw
+    being an arc and the chord the shorter way round. A keypoint's hit shape is
+    ``HIT_RADIUS`` px, and until the spacing reaches that, the shapes overlap and
+    hovering one point means hovering whichever was added last: a point nobody
+    can aim at is not a target, and sixty-eight of them are a smudge.
+
+    So the thresholds sit either side of that spacing, and that ordering is what
+    gives them their meaning — at ``REGIONS_ABOVE`` the points would still
+    overlap, which is why the middle band spends its colour on the contours
+    instead of on dots; at ``POINTS_ABOVE`` they no longer do, and not by so wide
+    a margin that the face was comfortably aimable long before the dots were
+    finally allowed to appear.
+
+    Unlike the anchor above, this survives a retune: it is a bound, not a value.
+    """
+    gaps = len(RENDER_GROUPS["face_jaw"]) - 1
+    assert POINTS_ABOVE / gaps >= HIT_RADIUS, "the points arrive while their hit shapes still overlap"
+    assert POINTS_ABOVE / gaps <= 3.0 * HIT_RADIUS, "the points arrive long after they became aimable"
+    assert REGIONS_ABOVE / gaps < HIT_RADIUS, "regions no longer arrive before the points are aimable"
+
+
+@pytest.mark.parametrize(
+    ("screen_px", "expected"),
+    [
+        (24.0, FaceDetail.CONTOURS),    # one face in a group shot, fitted to the window
+        (60.0, FaceDetail.CONTOURS),    # a thumbnail: a jaw line is all there is room for
+        (120.0, FaceDetail.REGIONS),    # a small portrait — features tell apart, dots would not
+        (150.0, FaceDetail.REGIONS),    # plainly a face, and its 68 points would still touch
+        (320.0, FaceDetail.POINTS),     # half the width of a 640 px viewport
+        (600.0, FaceDetail.POINTS),     # filling the window
+    ],
+)
+def test_a_face_of_a_size_anyone_can_picture_gets_the_detail_that_size_deserves(
+    screen_px: float, expected: FaceDetail
+) -> None:
+    """Sizes in plain screen pixels, on purpose not derived from the thresholds.
+
+    The parametrized rows further up assert about bands relative to wherever the
+    thresholds happen to be, and are worth having for that: they go on describing
+    the bands correctly through a retune. These rows assert about what a person
+    sees at a size they could say out loud, so they hold only while the
+    thresholds stay near where they are — which is the point of them.
+
+    No row is nearer a threshold than a quarter of its value, so retuning 80 to
+    90, or 200 to 240, leaves all six standing. They start to fail once a
+    threshold slips by about a quarter downwards or half again upwards — far
+    enough out that no honest retune reaches it, and well short of the tenfold
+    drift the anchor above exists to catch.
+    """
+    assert face_detail(screen_px) is expected
+
+
+def test_a_thumbnail_draws_no_points_and_a_face_filling_the_view_draws_them_all(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """The same anchor through the overlay, where the pixels are the real ones.
+
+    ``face_detail`` can be right about every band and the overlay still spend 68
+    items on a 60 px face, if what it measures is not the face. So the two sizes
+    a person can name are checked end to end on a 640 px canvas: a thumbnail
+    draws its contours and not one point, and a head filling three quarters of
+    the canvas draws all sixty-eight.
+    """
+    _, thumbnail = _overlay(qtbot, extent=60.0)
+    assert thumbnail.face_detail is FaceDetail.CONTOURS
+    assert thumbnail.keypoint_item_count == 0
+
+    _, filling = _overlay(qtbot, extent=480.0)
+    assert filling.face_detail is FaceDetail.POINTS
+    assert filling.keypoint_item_count == FACE_POINTS
 
 
 # --------------------------------------------------------- what gets built
