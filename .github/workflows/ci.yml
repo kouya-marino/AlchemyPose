@@ -71,10 +71,22 @@ jobs:
       - name: Ruff lint
         run: ruff check src tests main.py
 
-      # The first run needs no arguments: pyproject already points mypy at the
-      # alchemypose package with src on the path. That package is all it points
-      # at, so main.py needs its own line or it stays the one file in the repo
-      # that nothing type-checks.
+      # The first run needs no arguments: pyproject sets packages =
+      # ["alchemypose"] with mypy_path = src, so it checks the 38 files of the
+      # package and nothing else. main.py lives outside src/, so it is not in
+      # that set and needs its own line.
+      #
+      # It is not the only file outside it. The 37 .py files under tests/ are
+      # unchecked too, and that is a choice, not an oversight: measured on this
+      # tree, `mypy tests` reports 18 errors in 8 files. Eleven are
+      # unused-ignore, nearly all `# type: ignore[type-arg]` on a bare
+      # np.ndarray annotation that this config does not in fact object to; four
+      # func-returns-value and two arg-type are one lambda in test_worker.py
+      # whose comma expression returns a tuple where a None callback is
+      # declared; one is a call-overload on a *args/**kwargs mkstemp wrapper in
+      # test_weights.py. None of the 18 is a defect in the shipped package, so
+      # extending the gate here would only turn the next push red for reasons
+      # the runtime does not care about. Clear them first, then add the path.
       - name: Type check
         run: |
           mypy
@@ -83,9 +95,10 @@ jobs:
       # core/ and inference/ with no weights, no display and no network — every
       # download in these tests is monkeypatched out. This is where the
       # inference behaviour that CI can actually prove lives: test_rtmw_wiring
-      # drives the real RTMWEngine.infer over stubbed ONNX sessions, so the
-      # per-model SimCC peak scale is checked on every push rather than only on
-      # a machine that happens to have the weights.
+      # drives the real RTMWEngine.infer over stubbed ONNX sessions and asserts
+      # on both ends of the session call — the blob infer builds, and what it
+      # makes of the SimCC rows that come back. The last step below says which
+      # half of the inference story that is and which half it is not.
       - name: Unit tests
         run: pytest tests/unit
 
@@ -116,8 +129,24 @@ jobs:
       # here was exercised. What the step does buy is collection — an import
       # error, a renamed fixture or a helper that stopped matching the code
       # surfaces on the push that caused it instead of on the next developer
-      # who runs the suite with weights on their machine. The score-scale
-      # property these tests pin against real output is guarded on every push,
-      # weights or not, by tests/unit/test_rtmw_wiring.py.
+      # who runs the suite with weights on their machine.
+      #
+      # What a skip here does not cost: the wiring. tests/unit/test_rtmw_wiring
+      # puts stub sessions behind the real engine, so every push still proves
+      # that infer crops to the input size its loaded pose model declares and
+      # hands the session a C-contiguous float32 NCHW blob; that the crop is
+      # ImageNet-normalised, in RGB order, before the session sees it, rather
+      # than passed through raw; that YOLOX is fed raw letterboxed 0..255 BGR
+      # instead, the two stages differing on purpose; and that the decode
+      # divides by that model's own PEAK_SCALE entry and clips to [0, 1].
+      #
+      # What it does cost: whether those constants are the right constants, and
+      # whether the graph accepts the blob. PEAK_SCALE was measured on real
+      # output, not derived, and the wiring test supplies its own peaks — it
+      # would agree with a wrong table just as readily. The normalisation is the
+      # same: a stub proves infer calls it, only a real photograph shows the
+      # keypoints that come out are anatomically coherent, and only real
+      # onnxruntime rejects an input the stub swallows. So read a skip here as
+      # "the plumbing is guarded, the numbers in it are not".
       - name: Weights-only tests (skipped without cached weights)
         run: pytest tests/integration
