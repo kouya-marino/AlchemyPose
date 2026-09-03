@@ -139,15 +139,28 @@ than Fixed: nothing in this repository was ever broken by it.
   confidence score means; its timing table now says what it measures — the pose model
   alone, per detected person, with the detector's per-frame cost stated separately —
   rather than leaving the reader to guess. CI runs ruff, mypy, the unit tests and then
-  the GUI suite under `QT_QPA_PLATFORM=offscreen`, on Python 3.12 only.
-  `tests/integration` is excluded by path so that a push can never pull 464 MB of
-  weights; the cache check inside those tests is the backstop, not the guarantee.
+  the GUI suite under `QT_QPA_PLATFORM=offscreen`, on Python 3.12 only. No step on a
+  runner downloads weights, so a push can never pull the 464 MB of ONNX files; the
+  cache check inside the `models`-marked tests is the backstop, not the guarantee.
 
-  Two things about it are worth stating rather than implying. The workflow **has never
-  run**: the file is not committed, so GitHub has never seen it, and its list of the
-  system libraries the PySide6 wheel links against — derived by reading the wheel's ELF
-  headers — is reasoned rather than observed. And the README still has no screenshot, on
-  a project whose stated goal is that it look striking in one.
+  **That workflow has run, and it passed.** It went in with `e9aebc2` and GitHub
+  registered it on that same push; three runs have completed, all pushes to `main`,
+  all successful — `e9aebc2` in 55s, `88a659e` in 1m 02s, `51aba8a` in 58s, on
+  `ubuntu-latest`. The last of them logged `ruff` clean, `mypy` reporting no issues
+  across 38 source files, 256 passed and 2 skipped in `tests/unit`, and 162 passed in
+  `tests/gui` — fewer than the local totals below, because tests have been added since
+  `51aba8a` — and the probe step ahead of the GUI tests printed `Qt 6.11.2 on
+  platform offscreen`. That last line is the one that mattered: the list of system
+  libraries the PySide6 wheel links against was derived by reading the wheel's ELF
+  headers, and it was reasoning rather than observation until a runner loaded the
+  offscreen plugin with exactly that list installed and nothing more.
+
+  Two things it still cannot speak to. CI never touches the weights, so CoreML, the
+  timings and every score distribution recorded here remain single-machine facts. And
+  a green tick belongs to the revision that earned it — `ci.yml` has been edited since
+  `51aba8a`, and those edits have not been through a runner. Separately, the README
+  still has no screenshot, on a project whose stated goal is that it look striking in
+  one.
 
 ### Fixed
 
@@ -261,22 +274,56 @@ than Fixed: nothing in this repository was ever broken by it.
 
 ### Notes
 
-- 429 tests, all of them passing. 267 run with no display at all; 162 need
-  `QT_QPA_PLATFORM=offscreen`; 11 of the 267 additionally need cached weights and
-  skip without them. `ruff check src tests` is clean and `mypy` reports zero
-  errors across 38 source files.
-- **The suite passes and then sometimes aborts, and both halves of that are
-  true.** Every test reports green and the run prints its `429 passed` line — and
-  in three of nineteen consecutive runs here the process then died during
-  interpreter shutdown with `libc++abi: terminating due to uncaught exception of type
-  std::__1::system_error: recursive_mutex lock failed: Invalid argument`, leaving
-  pytest with exit status 134. It is a teardown fault rather than a failing
-  assertion, but it is a red build to anything that reads an exit code, which is
-  every CI system there is. It is under investigation and is not yet understood,
-  so "the tests pass" has to be read as "the tests pass, and the process that ran
-  them survives about eight times in ten". Measure it as
-  `pytest -q > out 2>&1; rc=$?` — a pipeline like `pytest -q | tail -1` reports
-  `tail`'s status and hides the abort completely.
+- 442 tests, all of them passing. 277 run with no display at all; 165 are
+  the GUI suite, which sets `QT_QPA_PLATFORM=offscreen` for itself in
+  `tests/gui/conftest.py` rather than requiring it on the command line; 11
+  additionally need cached weights and skip without them. `ruff check src tests` is
+  clean and `mypy` reports zero errors across 38 source files. The total is a reading
+  taken while this entry was written, not a fixed property — it climbs as tests are
+  added.
+- **The suite used to pass and then abort, and that is now fixed.** Every test would
+  report green, the run would print its pass line, and then the process would die
+  during interpreter shutdown with `libc++abi: terminating due to uncaught exception
+  of type std::__1::system_error: recursive_mutex lock failed: Invalid argument`,
+  leaving pytest with exit status 134 — a teardown fault rather than a failing
+  assertion, but a red build to anything that reads an exit code, which is every CI
+  system there is.
+
+  The cause is onnxruntime's telemetry client. Its POSIX build batches events and
+  uploads them over HTTP on a thread of its own, and the static destructor that tears
+  the log manager down at exit frees a `recursive_mutex` that an upload still in
+  flight then locks; the lock fails with `EINVAL`, libc++ turns that into an uncaught
+  `std::system_error`, and the process takes SIGABRT. That makes it a race against a
+  network round-trip, which explains both the intermittency and why no single test
+  directory ever reproduced it: the upload does not leave until about nine and a half
+  seconds after the first `import onnxruntime`, and a short run has exited before then.
+  A whole-suite run lands squarely in that window.
+
+  The delay is observed rather than inferred. Watching a bare
+  `import onnxruntime; sleep` process with `lsof -a -p <pid> -i` shows it open exactly
+  one outbound socket — a single TCP connection to port 443 on an address registered
+  to Microsoft Corporation — first visible 9.5 to 9.6 seconds after the import, on
+  every one of four runs. With `ORT_DISABLE_TELEMETRY=1` set, the same process opens
+  no socket at all in twenty-five seconds, on every one of three runs. So the
+  variable does not merely quieten the logging; it stops the connection being made.
+
+  `tests/conftest.py` sets `ORT_DISABLE_TELEMETRY=1` at import, ahead of every test
+  module and therefore ahead of the first `import onnxruntime`, which is the only
+  point at which onnxruntime reads it (commit `f1dd076`). It uses `setdefault`, so a
+  run that wants telemetry back can ask for it in the environment.
+  `onnxruntime.disable_telemetry_events()` is not a substitute: it stops later events
+  being logged but leaves the manager and its uploader running.
+
+  Re-measured for this entry, interleaved, 40 runs per arm against trees identical
+  but for that one line: **0 aborts with the variable set, 4 without.** Pooling that
+  with every earlier sample taken in this project — 1 in 12, 1 in 20, 2 in 28, 3 in
+  19, and the 5 in 40 recorded on `f1dd076` — gives 16 aborts in 159 untreated runs,
+  about one in ten, against 0 in 80 treated ones. The headline figure this entry used
+  to carry, roughly two runs in ten, came from the nineteen-run sample alone and was
+  high. The rate moves with machine load and network latency, so the durable claim is
+  the contrast, not the percentage: frequent enough to matter, and now absent.
+  Measure any run as `pytest -q > out 2>&1; rc=$?` in any case — `pytest -q | tail -1`
+  reports `tail`'s status and hides an abort completely.
 - **The import boundary is enforced, not just intended.** A subprocess test
   asserts that `import alchemypose` loads zero `PySide6` modules, and running the
   full engine headless was measured at 0 Qt modules loaded. `core/` imports
@@ -327,7 +374,23 @@ than Fixed: nothing in this repository was ever broken by it.
   confidences to stay spread out at both ends, and the integration tests pin,
   per preset, where the median sits, how much survives each of several
   thresholds, and how much of the 0–1 range does useful filtering. The same
-  revert now turns four tests red, two of them against cached weights.
+  revert now turns seven tests red, and only two of those need cached weights —
+  the other five drive the real decoder over stubbed sessions, so the property is
+  guarded even on a machine that has never downloaded a model.
+
+  The claim itself has since been sampled rather than assumed, which is the only
+  way it can be worth anything. Four fixes have been put back and the whole suite
+  re-run against the reverted source: the channel-order revert turns two tests
+  red, the person-filter revert twelve, the peak scale seven. The fourth is a
+  second hole. Restoring the opacity constants that shipped wrong — `DASH_BELOW`
+  to 0.5 and `FULL_OPACITY_ABOVE` to 0.8 — leaves the entire suite green, and for
+  the same reason the channel-order test failed to bite: `tests/gui/test_polish.py`
+  builds its expectations *out of* the constants under test, so it pins the way
+  `confidence_opacity` interpolates between them and slides along with whatever
+  the endpoints happen to be. It is carried as an open item in `todo.md`. The
+  accurate form of the claim, then: reverting is the habit here, it has now
+  exposed two fixes that no test could detect, and it has been applied to four of
+  the fixes in this changelog rather than all of them.
 - Two assumptions written down before the code was run turned out to be wrong, and
   both were caught by running it: an error-recovery test that failed 100 times out of
   100 because two back-to-back submissions meant the second always superseded the

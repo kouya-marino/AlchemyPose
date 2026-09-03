@@ -56,20 +56,65 @@ Every commit so far is on `main`. No tag, nothing on PyPI.
   scene at the source photograph's own resolution, so it is the same file
   whatever the zoom and the window size happen to be.
 
-**Verified**, on this machine (Apple M5, macOS 26.6.2, Python 3.12.7, onnxruntime
-1.29.0, PySide6 6.11.2):
+**Verified in two places, which cover different ground.** On this machine — Apple
+M5, macOS 26.6.2, Python 3.12.7, onnxruntime 1.29.0, PySide6 6.11.2 — the whole
+suite runs, cached weights and CoreML included. On a clean `ubuntu-latest` runner,
+CI runs everything that needs neither. Both are green.
 
-- **429 tests pass.** 267 run with no display; 162 need
-  `QT_QPA_PLATFORM=offscreen`; 11 of the 267 also need cached weights and skip
-  without them. `ruff check src tests` clean; `mypy` reports zero errors across
-  38 source files.
-- **And in about two runs in ten the process aborts after saying so.** Every test
-  reports green, the `429 passed` line prints, and then the interpreter dies in
-  shutdown — `recursive_mutex lock failed` out of `libc++abi` — for an exit status
-  of 134. A teardown fault rather than a failing assertion, but an exit code is
-  all a build system reads, so this is not a clean suite yet. It is under
-  investigation. Read the status separately from the summary line:
-  `pytest -q > out 2>&1; rc=$?`, never `pytest -q | tail -1`.
+- **442 tests pass**, with `QT_QPA_PLATFORM=offscreen` set. 277 of them run
+  with no display at all; 165 are the GUI suite; 11 additionally need cached
+  weights and skip without them. `ruff check src tests` is clean and `mypy` reports
+  zero errors across 38 source files. Treat the total as a reading rather than a
+  constant — it moves whenever a test is added, and `pytest -q` re-reads it.
+
+  The GUI tests do not need that variable on the command line, which the older
+  wording here implied. `tests/gui/conftest.py` sets it itself, at import, before a
+  widget can exist, so a bare `pytest` runs them headless too; passing it explicitly
+  is belt and braces and is what the CI step does.
+
+- **CI has run three times and passed three times.** The workflow went in with
+  commit `e9aebc2`, and GitHub registered and ran it on that same push.
+
+  | Run | Commit | Started (UTC) | Result | Duration |
+  |---|---|---|---|---|
+  | 33684801971 | `e9aebc2` | 2026-09-02 21:22 | success | 55s |
+  | 33685597889 | `88a659e` | 2026-09-02 21:31 | success | 1m 02s |
+  | 33700786465 | `51aba8a` | 2026-09-03 00:44 | success | 58s |
+
+  Read out of the most recent log rather than off the tick: `ruff check` clean;
+  `mypy` "Success: no issues found in 38 source files"; `pytest tests/unit` 256
+  passed and 2 skipped; `pytest tests/gui` 162 passed — lower than the local counts
+  above because tests have been added since `51aba8a`, and the 2 skips are the two
+  `models`-marked unit tests finding no weights. The probe step ahead of the
+  GUI tests printed `Qt 6.11.2 on platform offscreen`. That is the line that
+  settles the one part of the workflow which was reasoning rather than observation:
+  the list of Linux system libraries the PySide6 wheel links against was read out
+  of the wheel's ELF headers, and a runner has now loaded the offscreen plugin with
+  exactly that list installed and nothing more.
+
+- **The shutdown abort is fixed, and the cause was telemetry.** For most of v1 the
+  suite would report green, print its pass line, and then die during interpreter
+  shutdown — `recursive_mutex lock failed` out of `libc++abi`, exit status 134.
+  onnxruntime's POSIX build carries a telemetry client that batches events and
+  uploads them on a thread of its own; at exit the static teardown of the log
+  manager frees a mutex that an upload still in flight then tries to lock, which
+  fails with `EINVAL` and becomes an uncaught `std::system_error`. It is a race
+  against a network round-trip, which is why it was intermittent and why no single
+  test directory ever showed it alone: the upload does not leave until about nine
+  and a half seconds after the first `import onnxruntime`, and a short run has
+  already exited. `tests/conftest.py` sets `ORT_DISABLE_TELEMETRY=1` before anything
+  imports onnxruntime (commit `f1dd076`), which is the only point at which the
+  setting is read.
+
+  Re-measured here, interleaved, 40 runs per arm against trees identical but for
+  that one line: **0 aborts with the variable set, 4 without.** Pooling every sample
+  taken in this project puts the untreated rate near one run in ten and the treated
+  rate at zero in eighty; the earlier "three in ten" was a nineteen-run sample. The
+  rate moves with machine load and network latency, so the durable statement is that
+  it was frequent enough to matter and is now absent. Read the status separately from
+  the summary line regardless — `pytest -q > out 2>&1; rc=$?`, never
+  `pytest -q | tail -1`, which reports `tail`'s status and hides an abort
+  completely.
 - **The CLI produces real output.**
   `alchemypose image tests/integration/fixtures/two_people.jpg --preset performance`
   finds 3 people in a 982×670 photograph and writes a 400-line CSV — one header
@@ -94,13 +139,16 @@ Every commit so far is on `main`. No tag, nothing on PyPI.
   zero isolated dots.
 - Six model files, 464 MB, downloaded and hash-verified for real.
 
-**What v1 does not have yet.** CI is written but has never run: the workflow file
-is not committed, so GitHub has never seen it, and its hand-derived list of the
-system libraries PySide6 links against is unproven — so nothing here has ever been
-checked anywhere but this machine. The intermittent shutdown abort above is open.
+**What v1 does not have yet.** The half of the project that needs real weights has
+still only ever been exercised here: CI downloads nothing, so every `models`-marked
+test skips on a runner, and CoreML, the timings and the score distributions above
+are single-machine facts. A green tick also belongs only to the revision that earned
+it, and `ci.yml` has been edited since `51aba8a` without going through a runner
+again. The opacity recalibration has no test that can detect it being undone —
+restoring the old constants leaves the suite green, which is recorded in `todo.md`.
 The README has no screenshot, which is a strange omission on a page about a visual
-tool. A handful of smaller loose ends are carried in `todo.md`, which is the
-checklist.
+tool. Nothing is tagged, nothing is on PyPI, and the repository is still private. A
+handful of smaller loose ends are carried in `todo.md`, which is the checklist.
 
 ---
 

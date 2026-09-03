@@ -11,9 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One job, four gates, in the order a developer runs them locally: lint, then
+  # One job, five gates, in the order a developer runs them locally: lint, then
   # types, then the tests that need nothing, then the tests that need a Qt
-  # platform. Splitting them into parallel jobs would mean installing PySide6
+  # platform, and last the weights-only tests — which have nothing to run here
+  # and say so. Splitting them into parallel jobs would mean installing PySide6
   # (~80 MB of wheel) three times to save a minute.
   ci:
     runs-on: ubuntu-latest
@@ -64,23 +65,27 @@ jobs:
       - name: Install package (with dev extras)
         run: pip install -e ".[dev]"
 
+      # main.py is named explicitly because it lives outside src/: it is the
+      # launcher for a bare checkout with nothing installed, and no glob here
+      # would otherwise reach it.
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests main.py
 
-      # No arguments: pyproject already points mypy at the alchemypose package
-      # with src on the path.
+      # The first run needs no arguments: pyproject already points mypy at the
+      # alchemypose package with src on the path. That package is all it points
+      # at, so main.py needs its own line or it stays the one file in the repo
+      # that nothing type-checks.
       - name: Type check
-        run: mypy
+        run: |
+          mypy
+          mypy main.py
 
       # core/ and inference/ with no weights, no display and no network — every
-      # download in these tests is monkeypatched out.
-      #
-      # tests/integration is excluded by path. It is the only place marked
-      # `models`, and it wants ~480 MB of cached ONNX files that CI has no
-      # business fetching. Running plain `pytest` here would not download them
-      # either — every integration fixture checks the cache and calls
-      # pytest.skip before it constructs an engine — but not collecting them at
-      # all is the guarantee; the skip is just the backstop.
+      # download in these tests is monkeypatched out. This is where the
+      # inference behaviour that CI can actually prove lives: test_rtmw_wiring
+      # drives the real RTMWEngine.infer over stubbed ONNX sessions, so the
+      # per-model SimCC peak scale is checked on every push rather than only on
+      # a machine that happens to have the weights.
       - name: Unit tests
         run: pytest tests/unit
 
@@ -102,3 +107,17 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest tests/gui
+
+      # Collected, not relied on. Every test in tests/integration is marked
+      # `models` and skips itself when the ~486 MB of ONNX files are absent
+      # from the cache, which on a runner they always are — CI has no business
+      # downloading them. So a green tick on this step means SKIPPED, never
+      # PASSED: read the SKIPPED lines in the log before believing anything
+      # here was exercised. What the step does buy is collection — an import
+      # error, a renamed fixture or a helper that stopped matching the code
+      # surfaces on the push that caused it instead of on the next developer
+      # who runs the suite with weights on their machine. The score-scale
+      # property these tests pin against real output is guarded on every push,
+      # weights or not, by tests/unit/test_rtmw_wiring.py.
+      - name: Weights-only tests (skipped without cached weights)
+        run: pytest tests/integration
