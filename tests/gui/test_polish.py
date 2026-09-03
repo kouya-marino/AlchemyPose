@@ -1,4 +1,4 @@
-"""Task 21: confidence opacity, image dimming, staggered draw-in — and the
+"""Confidence opacity, image dimming, staggered draw-in — and the
 canvas/overlay lifetime seam that a second ``set_image`` exposes."""
 
 import numpy as np
