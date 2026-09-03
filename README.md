@@ -15,9 +15,10 @@ leg, the face on its own.
 
 > **Status: v1 works, on single images.** Open a photograph and every person in it
 > comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
-> chips and a confidence slider. The CLI writes the same result as JSON or CSV. Still
-> missing: an export button in the window, face level-of-detail, and video. See
-> [Roadmap](#roadmap).
+> chips and a confidence slider. The face resolves from contours to individual points
+> as it grows on screen, and the Export menu writes the keypoints as JSON or CSV and
+> the overlay as a PNG. The CLI produces the same result with no window at all. Still
+> missing: video, and 3D. See [Roadmap](#roadmap).
 
 ---
 
@@ -113,6 +114,24 @@ On the canvas, clicking a joint emphasises its group and fades the rest; double-
 (or `Shift+H`) solos it and hides everything else; `Esc` or `Alt+H` puts it back.
 Hovering reads the keypoint's name, confidence and group into the inspector.
 
+Zooming into a face changes what is drawn on it and not merely how large it is.
+Below about 80 pixels of face on screen it is drawn as contours in a single grey;
+above that the brows, eyes, nose and lips take their own colours; and only above
+about 200 pixels — where adjacent points are finally far enough apart to aim at —
+are the 68 individual keypoints drawn at all. Sixty-eight dots on a thumbnail are a
+smudge, whereas the contours through them read as a face at any size. The **Face**
+chip zooms to the face as well as selecting it, which is what spares the window a
+separate face mode.
+
+### Getting it back out
+
+The **Export** menu writes the keypoints as JSON or CSV, and the overlay as a PNG.
+The PNG renders the scene rather than the widget, so it arrives at the photograph's
+own resolution and is the same file whatever the zoom, the scroll position or the
+shape of the window. A PNG needs only an open photograph; the two data formats need
+a result. When there is nothing to write yet it says so in the status bar rather
+than opening a dialog on an empty canvas.
+
 ### One image, from the shell
 
 ```console
@@ -195,7 +214,7 @@ vendored in the repository or the wheel.
 |---|---|---|---|
 | `lite` | YOLOX-nano + RTMW-m 256×192 | 63 MB | ~4 ms |
 | `balanced` | YOLOX-tiny + DWPose-l 384×288 | 148 MB | ~13 ms |
-| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | ~20 ms |
+| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | ~25 ms |
 
 Sizes are the extracted `.onnx` files as they sit in the cache, in binary megabytes —
 the figures `ls -lh` and `du -h` print — so the three rows add up to the 464 MB all six
@@ -259,8 +278,8 @@ a schema migration.
 - [x] Inference worker and CLI
 - [x] Canvas, layer tree, preset chips, selection
 - [x] Confidence: honest 0..1 scores, threshold slider, fade and dashed bones
-- [ ] Face level-of-detail
-- [ ] Export from the window
+- [x] Face level-of-detail
+- [x] Export from the window
 
 **v2 — video.** Upload and scrub, per-frame overlay, tracking, temporal smoothing.
 
@@ -286,6 +305,19 @@ CI (`.github/workflows/ci.yml`) runs the first four of those on Python 3.12 — 
 version, because `requires-python` is pinned to `>=3.12,<3.13`. It never runs the
 integration tests: they want all 464 MB of cached weights, and a CI job has no
 business downloading that. On a machine without them they skip rather than fail.
+
+**Two caveats, stated rather than implied.** That workflow has never actually run:
+the file is not committed, so GitHub has never seen it, and the list of Linux system
+libraries further up was derived by reading the PySide6 wheel rather than by watching
+a runner install them. Assume it is wrong until a run is green. And the suite, while
+every test in it currently passes, aborts during interpreter shutdown in roughly two
+runs out of ten — `libc++abi: terminating due to uncaught exception of type
+std::__1::system_error: recursive_mutex lock failed: Invalid argument`, exit status
+134 — *after* the summary line has already printed. It is a teardown fault rather
+than a failing assertion, and it is being tracked down. Until it is, run the suite
+as `pytest -q > out 2>&1; rc=$?` and read `rc`: a pipeline such as
+`pytest -q | tail -1` reports the exit status of `tail` and hides the abort
+completely.
 
 ---
 

@@ -24,7 +24,7 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 A photograph goes in; every person in it comes back with 133 keypoints, drawn as
 an interactive skeleton whose parts can be shown, hidden, isolated and inspected.
 
-33 commits on `main`, all 2026-09-02. No tag, nothing on PyPI.
+Every commit so far is on `main`. No tag, nothing on PyPI.
 
 **What it contains**
 
@@ -46,14 +46,30 @@ an interactive skeleton whose parts can be shown, hidden, isolated and inspected
   inspector and a person's-left/right legend. Click to emphasise, double-click or
   `Shift+H` to solo, `Esc` / `Alt+H` to restore.
 - **A CLI that never touches Qt** — `alchemypose image`, `models list|fetch|clear`.
+- **Face level of detail** — the 68 face points resolve from contours, to
+  contours coloured per region, to the individual points, on thresholds of 80 px
+  and 200 px of face measured *on screen* rather than in the photograph. The
+  canvas announces every change of scale and the overlay rebuilds only when one
+  of the two thresholds is crossed. The **Face** chip magnifies the face on the
+  same canvas, which is what a face mode would have been for.
+- **Export** — keypoints as JSON or CSV, the overlay as a PNG rendered from the
+  scene at the source photograph's own resolution, so it is the same file
+  whatever the zoom and the window size happen to be.
 
 **Verified**, on this machine (Apple M5, macOS 26.6.2, Python 3.12.7, onnxruntime
 1.29.0, PySide6 6.11.2):
 
-- **343 tests pass.** 240 run with no display; 103 need
-  `QT_QPA_PLATFORM=offscreen`; 7 of the 240 also need cached weights and skip
+- **429 tests pass.** 267 run with no display; 162 need
+  `QT_QPA_PLATFORM=offscreen`; 11 of the 267 also need cached weights and skip
   without them. `ruff check src tests` clean; `mypy` reports zero errors across
-  36 source files.
+  38 source files.
+- **And in about two runs in ten the process aborts after saying so.** Every test
+  reports green, the `429 passed` line prints, and then the interpreter dies in
+  shutdown — `recursive_mutex lock failed` out of `libc++abi` — for an exit status
+  of 134. A teardown fault rather than a failing assertion, but an exit code is
+  all a build system reads, so this is not a clean suite yet. It is under
+  investigation. Read the status separately from the summary line:
+  `pytest -q > out 2>&1; rc=$?`, never `pytest -q | tail -1`.
 - **The CLI produces real output.**
   `alchemypose image tests/integration/fixtures/two_people.jpg --preset performance`
   finds 3 people in a 982×670 photograph and writes a 400-line CSV — one header
@@ -78,12 +94,13 @@ an interactive skeleton whose parts can be shown, hidden, isolated and inspected
   zero isolated dots.
 - Six model files, 464 MB, downloaded and hash-verified for real.
 
-**What v1 does not have yet.** Face level-of-detail — the 68 face points are drawn
-at every zoom rather than resolving from contours as the face grows on screen — and
-export from the window. CI is written but has never run: the workflow file is not
-committed, so GitHub has never seen it, and its hand-derived list of the system
-libraries PySide6 links against is unproven. The README has no screenshot, which is
-a strange omission on a page about a visual tool. The checklist is in `todo.md`.
+**What v1 does not have yet.** CI is written but has never run: the workflow file
+is not committed, so GitHub has never seen it, and its hand-derived list of the
+system libraries PySide6 links against is unproven — so nothing here has ever been
+checked anywhere but this machine. The intermittent shutdown abort above is open.
+The README has no screenshot, which is a strange omission on a page about a visual
+tool. A handful of smaller loose ends are carried in `todo.md`, which is the
+checklist.
 
 ---
 

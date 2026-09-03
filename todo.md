@@ -14,10 +14,19 @@ AlchemyFace shipped three releases that way because the update was scheduled for
 1.0.0. It nearly happened here too: the README was written a third of the way
 through v1 and described the GUI as "being assembled" until the very end.
 
-**A test only counts once it has been seen to fail.** Every fix in v1 was checked
-by reverting it and confirming the new test goes red. Two tests in this build
-could not fail and were rewritten or deleted; a test that cannot fail is worse
-than no test, because it reports safety.
+**A test only counts once it has been seen to fail.** A fix is checked by
+reverting it and confirming the new test goes red. Two tests in this build could
+not fail and were rewritten or deleted; a test that cannot fail is worse than no
+test, because it reports safety.
+
+The peak scale is why that rule is written down rather than assumed. Its guards
+asserted only that confidences land in `[0, 1]` and that *some* threshold keeps a
+subset — both of which survive the fix being reverted, because clipping produces
+them — so reverting it left the suite green while the slider went inert again.
+They were rebuilt around the shape of the score distribution instead, and the
+revert now fails four tests. The lesson is the second-order one: do not write
+"every fix was verified this way" unless every fix has been. An overclaim about
+test rigour is worse than no claim, because it stops anyone checking.
 
 ---
 
@@ -91,6 +100,41 @@ than no test, because it reports safety.
       against real score distributions after the peak-scale fix.
 - [x] Staggered load animation, torso → limbs → feet → hands → face.
 
+### `gui/` — face level of detail
+- [x] `gui/canvas/lod.py`: `FaceDetail` (`CONTOURS` / `REGIONS` / `POINTS`) and
+      `face_detail(face_box_screen_px)`, thresholds at 80 px and 200 px. Nothing
+      in it imports Qt, so the thresholds are tested without a widget.
+- [x] Skip the individual face points below `POINTS`; the contours are drawn at
+      every level. At fit-to-window 68 dots are a grey smudge, and 200 px is
+      where adjacent dlib-68 points clear the 11 px hit radius a joint claims.
+- [x] From `REGIONS` up, jaw, brows, nose, eyes and lips take their own colours
+      in place of the theme's single face grey — in hues that avoid the green and
+      orange the legend reserves for the person's left and right.
+- [x] `PoseCanvas.zoom_changed = Signal(float)`, emitted from `zoom_by`,
+      `fit_to_window` and `zoom_to_rect`; `PoseOverlay.on_zoom_changed` rebuilds
+      only when the zoom crosses one of the two thresholds.
+- [x] A face with no extent at all counts as unmeasured rather than tiny and keeps
+      its points. *(Contours through coincident points are zero-length strokes, so
+      thinning there would leave nothing drawn at all.)*
+- [x] The **Face** preset chip calls `zoom_to_rect` on the face bounds, so it
+      delivers the magnification a face tab would have given without the mode.
+      Clicking it before a detection returns is harmless — the bounds are empty
+      then and an empty rectangle is ignored.
+
+### `gui/` — export
+- [x] `gui/export.py`: `export_json`, `export_csv`, `export_png`. The PNG renders
+      the **scene**, not the widget, so it comes out at the source image's own
+      resolution regardless of zoom or window size.
+- [x] An Export menu wired to file dialogs, refusing politely when there is
+      nothing to export. The dialog sits behind an injected `SavePrompt` protocol,
+      for the same reason `Reporter` does, so no test opens one; a cancelled
+      dialog, a folder that does not exist and an image too large to allocate all
+      end as a status line or a reported error rather than a traceback.
+- [x] Settled what a PNG export of a *soloed* selection contains: the visible
+      overlay, because the PNG renders the scene as it stands. Narrowing `all` to
+      `hands` takes the same export from 260 items to 82. A PNG needs only an open
+      photograph; JSON and CSV need a result.
+
 ---
 
 ## Open — v1
@@ -118,30 +162,9 @@ than no test, because it reports safety.
       untransformed, so it lands at the crop's top-left corner rather than at the
       image origin. Harmless while it is hidden, but at threshold 0.0 it is drawn
       there.
-- [ ] `ruff format` would reformat 28 files. The project gates on `ruff check`,
+- [ ] `ruff format` would reformat 33 of 73 files. The project gates on `ruff check`,
       which passes; decide whether to adopt the formatter and do it in one commit,
       or say in the README that it is deliberately not used.
-
-### Face level-of-detail
-- [ ] `gui/canvas/lod.py`: `FaceDetail` (`CONTOURS` / `REGIONS` / `POINTS`) and
-      `face_detail(face_box_screen_px)`, thresholds at 80 px and 200 px.
-- [ ] `PoseCanvas.zoom_changed = Signal(float)`, emitted from `zoom_by`,
-      `fit_to_window` and `zoom_to_rect`; `PoseOverlay.on_zoom_changed` rebuilds
-      only when the zoom crosses a threshold.
-- [ ] Skip individual face points below `POINTS`. At fit-to-window, 68 dots are a
-      grey smudge — contours read as a face at any size.
-- [ ] The **Face** preset chip calls `zoom_to_rect` on the face bounds, so it
-      delivers the magnification a face tab would have given without the mode.
-
-### Export
-- [ ] `gui/export.py`: `export_json`, `export_csv`, `export_png`. The PNG renders
-      the **scene**, not the widget, so it comes out at the source image's own
-      resolution regardless of zoom or window size.
-- [ ] An Export menu wired to file dialogs, refusing politely when there is
-      nothing to export.
-- [ ] Decide what a PNG export of a *soloed* selection should contain — the
-      visible overlay only, or the whole skeleton. The visible overlay, probably;
-      it is what the user is looking at.
 
 ### README, CI and release
 - [x] Rewrite the README for what v1 actually does: the window and its gestures,
@@ -166,6 +189,15 @@ than no test, because it reports safety.
       that silently skipped every GUI test, and a wheel check that reported a leak
       which did not exist because it ran from the wrong directory. Assume this one
       is wrong until a run is green.
+- [ ] **The suite aborts after passing, in roughly two runs out of ten.** Every
+      test reports green and the summary line prints; the process then dies during
+      interpreter shutdown with `libc++abi: terminating due to uncaught exception
+      of type std::__1::system_error: recursive_mutex lock failed: Invalid
+      argument`, leaving exit status 134. A teardown fault rather than a failing
+      assertion — but an exit code is the whole of what a build system reads, so
+      this blocks a green run however sound the tests are. Under investigation.
+      Measure it as `pytest -q > out 2>&1; rc=$?`; `pytest -q | tail -1` reports
+      `tail`'s status and hides the abort completely.
 - [ ] `tests/unit/test_readme.py` — assert the README names the install command,
       the launch command, the download size, the model and its licence. Prose
       about being kept current is not a mechanism; a test is.
