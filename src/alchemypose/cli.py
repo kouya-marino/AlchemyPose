@@ -9,12 +9,15 @@ import typer
 
 from alchemypose import __version__
 from alchemypose.errors import AlchemyPoseError
+from alchemypose.inference import weights
 
 app = typer.Typer(help="Whole-body human pose visualisation.", no_args_is_help=True)
 models_app = typer.Typer(help="Manage cached ONNX model files.")
 app.add_typer(models_app, name="models")
 
-_PRESET_HELP = "lite | balanced | performance"
+#: Derived, never typed out. A hand-written copy is how ``--help`` ends up
+#: advertising three presets while the rejection message names four.
+_PRESET_HELP = " | ".join(weights.PRESETS)
 
 
 def _fail(message: str) -> typer.Exit:
@@ -32,9 +35,9 @@ def _checked_preset(preset: str) -> str:
 
     ``weights.PRESETS`` is the single source of truth, so a preset added there
     needs no second edit here — which an ``Enum`` on the option would have.
+    ``_PRESET_HELP`` is built from the same dict, so ``--help`` and this message
+    cannot come to name different sets.
     """
-    from alchemypose.inference import weights
-
     if preset not in weights.PRESETS:
         raise _fail(f"unknown preset {preset!r}. Choose one of: {', '.join(weights.PRESETS)}.")
     return preset
@@ -97,8 +100,6 @@ def image(
 @models_app.command("list")
 def models_list() -> None:
     """Show the presets, their models, and whether they are cached."""
-    from alchemypose.inference import weights
-
     typer.echo(f"Cache: {weights.cache_dir()}")
     for preset, keys in weights.PRESETS.items():
         typer.echo(f"\n{preset}:")
@@ -111,8 +112,6 @@ def models_list() -> None:
 @models_app.command("fetch")
 def models_fetch(preset: str = typer.Option("performance", help=_PRESET_HELP)) -> None:
     """Download a preset's models now, rather than on first use."""
-    from alchemypose.inference import weights
-
     preset = _checked_preset(preset)
     for key in weights.PRESETS[preset]:
         typer.echo(f"Fetching {key} ...")
@@ -123,8 +122,6 @@ def models_fetch(preset: str = typer.Option("performance", help=_PRESET_HELP)) -
 @models_app.command("clear")
 def models_clear() -> None:
     """Delete every cached model file."""
-    from alchemypose.inference import weights
-
     removed = 0
     for file in weights.cache_dir().glob("*.onnx"):
         file.unlink()
