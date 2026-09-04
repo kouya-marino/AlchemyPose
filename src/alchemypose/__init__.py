@@ -6,7 +6,11 @@
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.0"
+#: The one place the version is written. ``pyproject.toml`` declares the version
+#: dynamic and reads it back from here, so the distribution metadata and this
+#: attribute cannot disagree — and ``tests/unit/test_package.py`` fails loudly if
+#: an installed copy ever proves otherwise.
+__version__ = "1.0.0"
 
 if TYPE_CHECKING:  # pragma: no cover
     from alchemypose.gui.app import App

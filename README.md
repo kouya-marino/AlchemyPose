@@ -1,8 +1,9 @@
 # AlchemyPose
 
-[![Python 3.12](https://img.shields.io/badge/python-3.12%20only-blue.svg)](https://www.python.org/)
+[![PyPI](https://img.shields.io/badge/PyPI-v1.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 Whole-body human pose over an image — **a typed Python library and a PySide6 desktop
 application**, built on [RTMW](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose)
@@ -13,12 +14,13 @@ Drop in a photograph. Every person in it gets 133 keypoints — body, feet, face
 both hands — and you choose what to look at: the whole skeleton, one hand, the left
 leg, the face on its own.
 
-> **Status: v1 works, on single images.** Open a photograph and every person in it
-> comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
-> chips and a confidence slider. The face resolves from contours to individual points
-> as it grows on screen, and the Export menu writes the keypoints as JSON or CSV and
-> the overlay as a PNG. The CLI produces the same result with no window at all. Still
-> missing: video, and 3D. See [Roadmap](#roadmap).
+> **1.0.0 — single images.** `pip install alchemypose`, type `alchemypose`, and the
+> window opens. Every person in the photograph you drop in comes back with 133
+> keypoints on a zoomable canvas, driven by a layer tree, preset chips and a
+> confidence slider. The face resolves from contours to individual points as it grows
+> on screen, and the Export menu writes the keypoints as JSON or CSV and the overlay
+> as a PNG. The CLI produces the same result with no window at all. Video and 3D are
+> the next two versions — see [Roadmap](#roadmap).
 
 ---
 
@@ -35,6 +37,48 @@ runtime rather than shipped in the wheel.
 
 ---
 
+## Install
+
+```bash
+pip install alchemypose
+alchemypose
+```
+
+The second line opens the window: `alchemypose` on its own is the application.
+`alchemypose --version` prints `1.0.0`, and the subcommands further down do the same
+work with no window at all.
+
+From source instead, if you have access to the repository:
+
+```bash
+git clone https://github.com/kouya-marino/AlchemyPose.git
+cd AlchemyPose
+python3 -m venv .venv && source .venv/bin/activate   # 3.12, 3.13 or 3.14
+pip install -e ".[dev]"
+```
+
+**Python 3.12 or newer.** `requires-python` is `>=3.12` — a floor with no ceiling.
+The floor is there because the *development* toolchain needs it: numpy ships type
+stubs written in 3.12 syntax, which mypy cannot parse under 3.11. That is a reason
+for a floor and not for a ceiling, so there is no upper bound; every dependency here
+already supports 3.13 and 3.14. The suite has been run in full on 3.12 and on 3.14,
+and CI runs it on 3.12, 3.13 and 3.14 on every push.
+
+**Install weight, stated honestly.** The package itself is tiny — a 79 KB wheel of
+pure Python — but two things behind it are not. `PySide6_Essentials` is a 106 MB
+download on macOS, whose wheel is a universal binary, and 55 to 76 MB on Linux and
+Windows; installed, it takes 328 MB on disk here. And the default model preset
+fetches 253 MB of ONNX weights the first time you run inference — 235 MB over the
+wire, since upstream ships them zipped. Both are one-time. The `lite` preset is
+63 MB if you would rather trade accuracy for footprint.
+
+On a bare Linux box the PySide6 wheel also needs a handful of system libraries it
+links against but does not carry: `libegl1`, `libgl1`, `libx11-6`, `libxkbcommon0`,
+`libfontconfig1`, `libdbus-1-3` and glib. The CI workflow installs exactly that set
+and nothing more, and a runner has since loaded Qt's offscreen plugin with it.
+
+---
+
 ## The keypoint schema
 
 COCO-WholeBody 133, in contiguous index ranges that map directly onto the interface:
@@ -47,8 +91,8 @@ COCO-WholeBody 133, in contiguous index ranges that map directly onto the interf
 | Left hand | 91–111 | 21 |
 | Right hand | 112–132 | 21 |
 
-Those ranges are grouped again into the parts the UI exposes — `torso_head`,
-`left_arm`, `right_leg`, `face_eyes`, `left_hand` and so on.
+Those ranges are grouped again into the 14 parts the UI exposes — `torso_head`,
+`left_arm`, `right_leg`, `face_eyes`, `left_hand` and so on — joined by 127 edges.
 
 The groups deliberately **overlap on anchor joints**: `left_arm` owns the shoulder
 even though `torso_head` does too. Without that, asking for "just the left leg" draws
@@ -65,37 +109,16 @@ bones = [e for e in topology.edges if selection.is_edge_visible(e)]
 
 ---
 
-## Install
-
-Not yet on PyPI. From source:
-
-```bash
-git clone git@github.com:kouya-marino/AlchemyPose.git
-cd AlchemyPose
-pyenv virtualenv 3.12.7 alchemypose && pyenv local alchemypose
-pip install -e ".[dev]"
-```
-
-**Install weight, stated honestly.** The package itself is small, but
-`PySide6_Essentials` is about 110 MB to download and about 335 MB once installed, and
-the default model preset adds 253 MB of weights on first use (235 MB over the wire).
-Both are one-time. The `lite` preset is 63 MB if you would rather trade accuracy for
-footprint.
-
-On a bare Linux box the PySide6 wheel also needs a handful of system libraries it
-links against but does not carry (`libegl1`, `libgl1`, `libx11-6`, `libxkbcommon0`,
-`libfontconfig1`, `libdbus-1-3`, glib) — see `.github/workflows/ci.yml`, which
-installs exactly that set and nothing more.
-
----
-
 ## Using it
 
 ### The window
 
 ```bash
-alchemypose gui
+alchemypose
 ```
+
+That is the whole of it: no subcommand, no arguments. (`alchemypose gui` does the
+same thing explicitly, and `python -m alchemypose gui` works too.)
 
 `Cmd+O` opens an image — `Ctrl+O` on Windows and Linux, since the action takes Qt's
 standard Open sequence. The photograph appears immediately and inference runs on a
@@ -138,6 +161,12 @@ than opening a dialog on an empty canvas.
 $ alchemypose image tests/integration/fixtures/two_people.jpg --preset lite --json /tmp/out.json
 Wrote /tmp/out.json
 ```
+
+That path is the test fixture in the source tree — a public-domain 1935 photograph of
+two people — so substitute any photograph of your own and the numbers below become
+yours. ONNX Runtime also writes a few `[W:onnxruntime:…]` lines to stderr while it
+builds a session, about unused initializers and how much of the graph CoreML took;
+they are notices, not errors, and stdout carries only the line above.
 
 Without `--json` the result goes to stdout; `--csv` also writes the flat
 `frame,person,keypoint_index,keypoint_name,x,y,score` form. The JSON carries the
@@ -210,18 +239,23 @@ Weights are downloaded on first use into the platform cache directory
 with `ALCHEMYPOSE_MODEL_DIR`) and verified against a recorded SHA-256. Nothing is
 vendored in the repository or the wheel.
 
-| Preset | Detector + pose model | On disk | Pose model, per person |
-|---|---|---|---|
-| `lite` | YOLOX-nano + RTMW-m 256×192 | 63 MB | ~4 ms |
-| `balanced` | YOLOX-tiny + DWPose-l 384×288 | 148 MB | ~13 ms |
-| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | ~25 ms |
+| Preset | Detector + pose model | On disk | Detection | Pose model, per person |
+|---|---|---|---|---|
+| `lite` | YOLOX-nano + RTMW-m 256×192 | 63 MB | 8 ms | 4 ms |
+| `balanced` | YOLOX-tiny + DWPose-l 384×288 | 148 MB | 15 ms | 14 ms |
+| `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | 42 ms | 25 ms |
 
 Sizes are the extracted `.onnx` files as they sit in the cache, in binary megabytes —
 the figures `ls -lh` and `du -h` print — so the three rows add up to the 464 MB all six
 files occupy together. Upstream ships them inside zips, so the transfer itself is
-slightly smaller (59 / 138 / 235 MB). Timings are the pose model alone, per detected
-person, on CoreML on an M5 — the detector adds 6 ms (`lite`) to 39 ms (`performance`)
-per frame, whatever the head count.
+slightly smaller (59 / 138 / 235 MB).
+
+The timings are medians of fifteen warm runs on one 982×670 photograph on an M5, with
+the split described below — the detector on the CPU provider, the pose model on
+CoreML. Detection is per frame whatever the head count; the pose column is per
+detected person. End to end that photograph takes 17 ms on `lite` (2 people found),
+58 ms on `balanced` and 114 ms on `performance` (3 people found). Opening the models
+costs another 1–3 seconds once per process, before the first inference.
 
 The person detector runs on the CPU execution provider and the pose model on CoreML.
 That split is not a tuning choice, though the reason is narrower than "CoreML cannot
@@ -258,14 +292,14 @@ and it does so by emitting signals, so nothing on a worker thread ever touches a
 widget.
 
 One result structure serves every phase. `PersonPose` carries `track_id` and
-`keypoints_3d` fields that stay empty in v1, so video and 3D are additive rather than
-a schema migration.
+`keypoints_3d` fields that stay empty in 1.0.0, so video and 3D are additive rather
+than a schema migration.
 
 ---
 
 ## Roadmap
 
-**v1 — single image** *(in progress)*
+**v1 — single image.** Shipped in 1.0.0.
 
 - [x] COCO-WholeBody 133 topology, render groups, presets
 - [x] Result schema with reserved video/3D slots
@@ -278,10 +312,13 @@ a schema migration.
 - [x] Inference worker and CLI
 - [x] Canvas, layer tree, preset chips, selection
 - [x] Confidence: honest 0..1 scores, threshold slider, fade and dashed bones
-- [x] Face level-of-detail
+- [x] Face level of detail
 - [x] Export from the window
 
 **v2 — video.** Upload and scrub, per-frame overlay, tracking, temporal smoothing.
+`PersonPose.track_id` and `PoseFrame.frame_index` have been in the schema since its
+first commit, and the worker is already latest-request-wins, which is what scrubbing
+needs.
 
 **v3 — 3D.** RTMW3D emits the same 133-keypoint topology with a third coordinate, so
 the layer panel and presets carry over unchanged; the new work is the viewport.
@@ -291,6 +328,7 @@ the layer panel and presets carry over unchanged; the new work is the viewport.
 ## Development
 
 ```bash
+pytest                        # the whole suite; the GUI half runs headless by itself
 pytest tests/unit -q          # core and inference; no display needed
 ruff check src tests main.py
 mypy
@@ -299,38 +337,59 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
+At 1.0.0 that is 511 tests, all passing, on a machine with the weights cached. Twelve
+of them are marked `models` — two in `tests/unit`, ten in `tests/integration` — and
+check the cache rather than downloading anything, so without weights the same run
+reports 499 passed and 12 skipped. `main.py` sits outside `src/`, so neither
+`ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
+appears twice above.
+
 The GUI tests need a Qt platform plugin, not a display: `offscreen` renders into a
 buffer, so there is no xvfb anywhere in this project. They do not need that variable
 on the command line, though — `tests/gui/conftest.py` sets it itself, at import,
 before any widget can be constructed, so a bare `pytest` runs them headless too.
 Setting it explicitly is belt and braces, and it is what the CI step does.
 
-Two of the unit tests are marked `models` and skip without cached weights, so the
-first line above reports a couple of skips rather than a clean sweep. `main.py` sits
-outside `src/`, so neither `ruff check src tests` nor a bare `mypy` reaches it; it
-needs naming, which is why it appears twice above.
+CI (`.github/workflows/ci.yml`) runs the test suite on **Python 3.12, 3.13 and 3.14**
+— the whole of what `requires-python = ">=3.12"` now claims — and runs `ruff` and
+`mypy` exactly once, in a job of their own. Both are static analysers configured
+against fixed targets (`target-version = "py312"`, `python_version = "3.12"`), so
+they return the same answer whichever interpreter invokes them; three copies of one
+answer is not a broader gate, only a longer log. The tests are the part that actually
+varies by interpreter, so the tests are the part that gets the matrix.
 
-CI (`.github/workflows/ci.yml`) runs the lint, type and test gates on Python 3.12 —
-the only version, because `requires-python` is pinned to `>=3.12,<3.13`. Nothing on
-a runner ever downloads weights, so the `models`-marked tests never actually execute
-there. They skip, which is a green tick meaning *not exercised* rather than
-*passed*.
+Nothing on a runner ever downloads weights, so the `models`-marked tests never
+actually execute there. They skip, which is a green tick meaning *not exercised*
+rather than *passed*.
 
-**It has run, and it passed.** Three runs so far, every one a push to `main` and
-every one successful: `e9aebc2` and `88a659e` on 2 September, `51aba8a` on
-3 September (UTC), each finishing in under seventy seconds on `ubuntu-latest`. The
-most recent reported `ruff` clean, `mypy` with no issues across 38 source files,
-256 passed and 2 skipped in `tests/unit`, and 162 passed in `tests/gui`. It also
-printed `Qt 6.11.2 on platform offscreen`, which is the line worth having: the list
-of Linux system libraries further up was derived by reading the PySide6 wheel's ELF
-headers rather than by watching a runner install them, and a runner has now loaded
-the offscreen plugin with exactly that list present and nothing more.
+**It has run, and it passed** — though on the single-interpreter shape this workflow
+had until 1.0.0, so read the numbers below as 3.12's. Six runs so far, every one a
+push to `main` and every one successful, each finishing in about a minute on
+`ubuntu-latest`. The most recent reported `ruff` clean, `mypy` with no issues across
+38 source files and then across `main.py`, 289 passed and 2 skipped in `tests/unit`,
+179 passed in `tests/gui`, and 10 skipped in the weights-only step. It also printed
+`Qt 6.11.2 on platform offscreen`, which is the line worth having: the list of Linux
+system libraries further up was derived by reading the PySide6 wheel's ELF headers
+rather than by watching a runner install them, and a runner has now loaded the
+offscreen plugin with exactly that list present and nothing more.
 
-Two things that tick does not cover. It says nothing about the half of the project
-that needs weights — CoreML, the timings and the score distributions on this page
-have only ever been measured on one Apple-silicon machine. And a workflow is proven
-only for the revision that ran it: edits to `ci.yml` after `51aba8a` have not yet
-met a runner.
+**The 3.13 and 3.14 legs are new, and have not had a push to run on yet.** What has
+been measured for the widened range is local: the full suite under Python 3.14.7, in
+a clean virtualenv built from the released dependency set, with the package installed
+from a source tree of its own so that nothing resolved back to the development
+checkout — 511 passed, 0 skipped, `pytest` exit status 0. Weights were present, so
+the twelve `models` tests ran against the real ONNX graphs rather than skipping.
+`ruff` and `mypy` were run under 3.14 as well and returned exactly what they return
+under 3.12, which is the measurement behind giving them one job instead of three. The
+same tree's 1.0.0 wheel installs and runs on 3.14; built with the old `<3.13` ceiling
+it does not, and pip says so — `requires a different Python: 3.14.7 not in
+'<3.13,>=3.12'` — which is what the ceiling was doing to everyone on a current
+interpreter. 3.13 is the gap: no 3.13 interpreter exists on the machine these numbers
+were taken on, so that leg is claimed by the matrix and not yet by a run.
+
+What that tick does not cover is the half of the project that needs weights. CoreML,
+the timings and the score distributions on this page have only ever been measured on
+one Apple-silicon machine.
 
 **The suite used to pass and then abort. It no longer does.** It would die during
 interpreter shutdown — `libc++abi: terminating due to uncaught exception of type
@@ -346,11 +405,41 @@ Run the suite as `pytest -q > out 2>&1; rc=$?` and read `rc` anyway. A pipeline 
 as `pytest -q | tail -1` reports the exit status of `tail`, so it would have hidden
 that abort entirely for as long as it lasted, and it will hide the next one.
 
+### Releasing
+
+A release is a tag. Pushing `v1.0.0` runs `.github/workflows/publish.yml`, which
+re-runs every gate above on the tagged commit and then uploads to PyPI through
+trusted publishing, so no API token exists anywhere in this repository. It is the one
+irreversible thing here: PyPI never allows re-uploading a version, and yanking a
+release does not give its number back. So the tag is spent only after the artefacts
+themselves have been read — the tag is matched against the version in
+`src/alchemypose/__init__.py`, then against the metadata inside the built wheel and
+sdist; the wheel's `Requires-Python` is compared against the one in `pyproject.toml`,
+because the string pip enforces is the one baked into the artefact and a wrong range
+published there cannot be edited afterwards, only yanked; both archives are searched
+for weights, `test-data/`, `docs/` and the test suite; the wheel is checked for a
+top-level `main`, because `main.py` is a checkout convenience and not ours to install
+into anyone's `site-packages`; and the wheel is installed into a throwaway virtualenv
+where each entry point is run and asked its version. That first check reads the attribute with `ast`, the way setuptools'
+`attr:` does, rather than reading `project.version` — with the version declared once
+and exposed through `dynamic = ["version"]`, that key does not exist here.
+
+The PyPI and Python badges at the top of this file are **static and version-pinned**,
+not the dynamic `shields.io/pypi/…` kind. Those proved unreliable: PyPI's JSON API
+serves a stale `info.version` for some time after an upload, shields.io caches
+whatever it read for three hours, and GitHub's image proxy then caches shields. The
+three compound, and the badge showed a version four releases behind. A pinned badge
+cannot be stale — and the release fails if either badge stops agreeing with what the
+package declares, so it cannot be forgotten either. The Python badge is held to the
+whole `Programming Language :: Python ::` classifier list rather than just to the
+`requires-python` floor: now that it names a range, checking only its first number
+would wave the rest of it through.
+
 ---
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see the `LICENSE` file in the source distribution.
 
 Model weights are Apache-2.0 from [MMPose](https://github.com/open-mmlab/mmpose)
 and are downloaded at runtime, not redistributed here.

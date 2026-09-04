@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -28,10 +28,15 @@ from alchemypose.core.schema import KeypointSelection, PoseResult
 from alchemypose.errors import AlchemyPoseError
 from alchemypose.gui import theme
 from alchemypose.gui.reporting import DialogReporter, Reporter
+from alchemypose.inference import weights
 from alchemypose.inference.engine import PoseEngine
 
 if TYPE_CHECKING:
     from alchemypose.gui.export import SavePrompt
+
+#: The preset the window runs. Named once, because the factory below has to
+#: fetch exactly the models the engine is about to ask for.
+DEFAULT_PRESET = "performance"
 
 WINDOW_TITLE = "AlchemyPose"
 WINDOW_GEOMETRY = (1440, 900)
@@ -55,7 +60,81 @@ def default_engine_factory() -> PoseEngine:
     """
     from alchemypose.inference.rtmw import RTMWEngine
 
-    return RTMWEngine(preset="performance")
+    return RTMWEngine(preset=DEFAULT_PRESET)
+
+
+def _weights_progress(key: str, announce: Callable[[str], None]) -> Callable[[int, int], None]:
+    """Turn ``weights.ensure``'s byte counts into sentences for the status bar.
+
+    Runs on the worker thread, and ``announce`` — a signal's ``emit`` — is the
+    only thing it is allowed to touch. The status bar is a widget, widgets
+    belong to the GUI thread, and the whole reason this returns a string rather
+    than writing one is that it is on the wrong side of that line.
+
+    ``ensure`` calls back once with ``(0, total)`` before any bytes move, and
+    that opening call is the one that carries the news worth having: which
+    model, and how big. The rest only move a percentage, and are throttled to
+    whole-percent changes — 213 MB arrives in some three thousand chunks, and
+    posting three thousand queued events to redraw the same sentence is work
+    the GUI thread has better uses for.
+    """
+    size = ""
+    last = -1
+
+    def report(done: int, total: int) -> None:
+        nonlocal size, last
+        if done == 0:
+            size, last = weights.human_size(total), -1
+            announce(f"Downloading {key} ({size}) ...")
+            return
+        # No Content-Length means no percentage to show; count megabytes instead.
+        if total > 0:
+            step = done * 100 // total
+            said = f"Downloading {key} ({size}) · {step}%"
+        else:
+            step = done // 1_000_000
+            said = f"Downloading {key} · {weights.human_size(done)}"
+        if step == last:
+            return
+        last = step
+        announce(said)
+
+    return report
+
+
+def _fetching_engine_factory(announce: Callable[[str], None]) -> Callable[[], PoseEngine]:
+    """The factory the worker actually calls: fetch the weights aloud, then build.
+
+    ``RTMWEngine`` fetches its own weights and says nothing at all while it
+    does, so on a fresh install the first photograph opened sat behind a
+    quarter of a gigabyte with the status bar reading "detecting ...". Doing
+    the fetch here first puts that download in front of ``announce``; the
+    engine's own ``weights.ensure``, moments later, finds every file present
+    and verified and returns at the speed of a checksum.
+
+    Nothing is said when nothing is downloaded: ``ensure`` does not call back
+    on a cache hit, so the ordinary warm run reaches the engine in silence and
+    the status bar keeps whatever ``open_image`` put there.
+    """
+
+    def factory() -> PoseEngine:
+        spoke = False
+
+        def speak(message: str) -> None:
+            nonlocal spoke
+            spoke = True
+            announce(message)
+
+        for key in weights.PRESETS[DEFAULT_PRESET]:
+            weights.ensure(key, progress=_weights_progress(key, speak))
+        if spoke:
+            # Only after a download, and only because the alternative is a
+            # status bar frozen at "100%" for as long as CoreML takes to
+            # compile the graph it has just been handed.
+            announce("Model weights ready. Loading ...")
+        return default_engine_factory()
+
+    return factory
 
 
 class MainWindow(QMainWindow):
@@ -66,6 +145,15 @@ class MainWindow(QMainWindow):
     ``reporter`` and ``save_prompt`` are injected for the same reason as each
     other: both open a modal, and a test must never construct one.
     """
+
+    #: Download news, emitted from the worker thread on its way to the status
+    #: bar. It is a signal for the same reason ``WorkerBridge``'s two are:
+    #: emitting is thread-safe from anywhere, and a connection to a slot on
+    #: this window is delivered by Qt's queued machinery on the GUI thread, so
+    #: nothing on the worker side ever touches a widget. It lives here rather
+    #: than on the bridge because it is the window's status bar being written
+    #: to, and the bridge exists to carry results.
+    weights_progress = Signal(str)
 
     def __init__(
         self,
@@ -145,9 +233,13 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+H"), self, self.selection.clear)
         QShortcut(QKeySequence("Esc"), self, self.selection.clear)
 
-        # The bridge is the only path from the worker thread to this window:
-        # both connections below are queued, so the slots run here, not there.
-        self._bridge = WorkerBridge(engine_factory or default_engine_factory, parent=self)
+        # Every path from the worker thread to this window is a signal, and all
+        # three connections below are queued, so the slots run here, not there.
+        self.weights_progress.connect(self.set_status)
+        self._bridge = WorkerBridge(
+            engine_factory or _fetching_engine_factory(self.weights_progress.emit),
+            parent=self,
+        )
         self._bridge.result_ready.connect(self._on_result)
         self._bridge.failed.connect(self._on_failed)
         self._bridge.start()

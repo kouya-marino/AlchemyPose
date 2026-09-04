@@ -23,24 +23,29 @@ The peak scale is why that rule is written down rather than assumed. Its guards
 asserted only that confidences land in `[0, 1]` and that *some* threshold keeps a
 subset — both of which survive the fix being reverted, because clipping produces
 them — so reverting it left the suite green while the slider went inert again.
-They were rebuilt around the shape of the score distribution instead, and putting
-`PEAK_SCALE["rtmw_l_384x288"]` back to `1.0` now turns seven tests red, only two
-of which need cached weights.
+They were rebuilt around the shape of the score distribution instead.
 
-The rule is applied, not universal, and the gap between those two words is the
-whole point. Four fixes have actually been through a revert. Restoring the
-BGR→RGB normalisation defect turns two tests red; undoing the person-filter fix
-turns twelve red; the peak scale turns seven. The fourth found a second hole:
-putting the old opacity constants back — `DASH_BELOW = 0.5`,
-`FULL_OPACITY_ABOVE = 0.8` — leaves the entire suite green, so that fix is
-currently unguarded. It is carried as an open item below. The second-order lesson
-holds: do not write "every fix was verified this way" unless every fix has been.
-An overclaim about test rigour is worse than no claim, because it stops anyone
-checking.
+Seven of v1's behaviours have now actually been through a revert, each one
+re-measured against the release tree rather than quoted from an older draft — one
+edit to the shipped source, the whole suite run after it, the source put back:
+
+| Undone in the shipped source | Tests that go red |
+|---|---|
+| `PEAK_SCALE["rtmw_l_384x288"]` → 1.0 | 7 (5 of them need no weights) |
+| `normalise_crop` fed BGR instead of RGB | 5 |
+| `_effective_selection` stops narrowing to the chosen person | 3 |
+| `letterbox` pads with 0 instead of 114 | 3 |
+| `DASH_BELOW` → 0.5 and `FULL_OPACITY_ABOVE` → 0.8 | **0** |
+| `YoloxDetector._parse` stops filtering on the person class | **0** |
+| `YoloxDetector.detect` skips its defensive `nms()` call | **0** |
+
+The three zeros are open items below. The second-order lesson holds: do not write
+"every fix was verified this way" unless every fix has been. An overclaim about
+test rigour is worse than no claim, because it stops anyone checking.
 
 ---
 
-## Done — v1 · the library and the engine
+## Done — v1, shipped in 1.0.0
 
 ### Scaffold
 - [x] `pyproject.toml`, `src/` layout, `py.typed`, MIT `LICENSE`, ruff + mypy
@@ -106,6 +111,12 @@ checking.
       mutated by the threshold.
 - [x] One emphasis mechanism, on the overlay, so a rebuild reproduces the dimming
       instead of discarding it.
+- [x] One writer for visibility. `SelectionController` writes to the layer tree
+      and stops there; the window composes the tree's groups with the person
+      chips in `_effective_selection` before anything reaches the canvas, so a
+      solo or a clear can no longer put everybody back on screen while a chip
+      still claims one person. *(Dropping that narrowing now turns three tests
+      red.)*
 - [x] Confidence-driven opacity and dashed low-confidence bones, recalibrated
       against real score distributions after the peak-scale fix.
 - [x] Staggered load animation, torso → limbs → feet → hands → face.
@@ -142,87 +153,44 @@ checking.
       end as a status line or a reported error rather than a traceback.
 - [x] Settled what a PNG export of a *soloed* selection contains: the visible
       overlay, because the PNG renders the scene as it stands. Narrowing `all` to
-      `hands` takes the same export from 260 items to 82. A PNG needs only an open
-      photograph; JSON and CSV need a result.
+      `hands` takes one person's overlay from 260 items to 82 — 133 keypoints plus
+      127 bones, against 42 plus 40. A PNG needs only an open photograph; JSON and
+      CSV need a result.
 
----
-
-## Open — v1
-
-### Deferred minors, to batch into one commit
-- [ ] `SelectionController._sync_overlay_from_layers` pushes the bare tree
-      selection, bypassing the window's person filter — so a solo or a clear drops
-      the chosen person until the next tree or chip change. Either the controller
-      asks the window for its effective selection, or the overlay holds the person
-      filter separately from `visible`.
-- [ ] Nothing calls `PoseOverlay.animate_in()`. It exists, it is tested, and
-      `MainWindow._on_result` is where it belongs — one line.
-- [ ] Nothing calls `PoseOverlay.set_image_dimmed()` either. The photograph is
-      meant to fall back to ~60% opacity once a selection exists, so the skeleton
-      reads as the subject — `theme.DIMMED_IMAGE_OPACITY` is already 0.6 and the
-      method already applies it. `SelectionController`'s `select_group` /
-      `solo_group` / `clear` are the call sites.
-- [ ] Move `PEAK_SCALE` onto `ModelSpec` in `weights.py`. It is a per-model
-      constant like `input_size`, and it currently lives in `rtmw.py` away from
-      everything else that describes a model. Mechanical.
-- [ ] `SelectionController._emphasised` and `PoseOverlay._emphasis` track
-      overlapping state and can legitimately disagree while soloed. Deliberate for
-      now; revisit if any panel reads emphasis from both.
-- [ ] A keypoint with no peak is zeroed in *model-input* space and then affine
-      untransformed, so it lands at the crop's top-left corner rather than at the
-      image origin. Harmless while it is hidden, but at threshold 0.0 it is drawn
-      there.
-- [ ] `ruff format` would reformat 34 of the 76 files under `src` and `tests`. The
-      project gates on `ruff check`, which passes; decide whether to adopt the
-      formatter and do it in one commit, or say in the README that it is
-      deliberately not used.
-- [ ] **Nothing in the suite can detect a miscalibrated opacity constant.**
-      `tests/gui/test_polish.py` derives its expectations *from* the constants it
-      is checking — `CONFIDENT = (1.0 + FULL_OPACITY_ABOVE) / 2.0`, and the dash
-      cases are written at `DASH_BELOW` and `DASH_BELOW - 0.01` — so it pins the
-      shape of `confidence_opacity` and slides along with whatever the constants
-      happen to be. Restoring the values that shipped wrong, `DASH_BELOW = 0.5`
-      and `FULL_OPACITY_ABOVE = 0.8`, leaves the whole suite green. What is
-      missing is a test against a realistic score distribution — the fixture
-      percentiles the constants were calibrated on — asserting that the dashed
-      fraction and the full-opacity fraction stay inside the intended band. Until
-      that exists, the recalibration is a fix with no guard on it.
-
-### README, CI and release
+### README, CI and the 1.0.0 release
 - [x] Rewrite the README for what v1 actually does: the window and its gestures,
       the CLI with real transcripts, what a confidence score means and why it
       needed work, and a roadmap with the right boxes ticked. *(It had gone stale
       almost immediately — it still described the GUI as "being assembled" with
       the detector, engine, worker, CLI, canvas and layer tree all listed as
       outstanding.)*
-- [x] Say plainly what the README's timing table measures. It is now the pose
-      model alone, per detected person, with the detector's per-frame cost stated
-      separately. End to end on the fixture, warm, on this machine: `lite` 17 ms
-      for 2 people, `performance` 112 ms for 3 — consistent with the parts.
-- [x] `.github/workflows/ci.yml` — ruff, mypy, `pytest tests/unit`, then the GUI
-      suite under `QT_QPA_PLATFORM=offscreen`. Python 3.12 only, not a matrix: a
-      3.11 entry would be a guaranteed red X, since numpy's stubs will not parse
-      under it. No weights are ever fetched on a runner, so the `models`-marked
-      tests skip there; the in-test cache check is the backstop, not the guarantee.
-- [x] **CI has run, and it is green.** The workflow went in with commit `e9aebc2`
-      and GitHub registered it on that same push. Three runs to date, all pushes
-      to `main`, all successful: `e9aebc2` (run 33684801971, 55s), `88a659e`
-      (33685597889, 1m 02s) and `51aba8a` (33700786465, 58s), the first two on
-      2 September and the last on 3 September, UTC. The most recent log shows
-      `ruff` clean, `mypy` with no issues across 38 source files, `tests/unit` at
-      256 passed and 2 skipped, and `tests/gui` at 162 passed. The step ahead of
-      the GUI tests printed `Qt 6.11.2 on platform offscreen`, so the hand-derived
+- [x] Say plainly what the README's timing table measures — the pose model alone,
+      per detected person, with the detector's per-frame cost stated separately —
+      and re-measure both for the release rather than carrying the numbers over.
+- [x] `.github/workflows/ci.yml` — ruff, mypy, `pytest tests/unit`, the GUI suite
+      under `QT_QPA_PLATFORM=offscreen`, and the weights-only tests last. Python
+      3.12 only, not a matrix: a 3.11 entry would be a guaranteed red X, since
+      numpy's stubs will not parse under it. No weights are ever fetched on a
+      runner, so the `models`-marked tests skip there; the in-test cache check is
+      the backstop, not the guarantee.
+- [x] **CI has run, and it is green.** Six runs to date, all pushes to `main`, all
+      successful: `e9aebc2` (run 33684801971, 55s), `88a659e` (33685597889, 1m 02s),
+      `51aba8a` (33700786465, 58s), `03a701f` (33735124492, 1m 01s), `4ba3cdb`
+      (33738463693, 59s) and `f3d42ab` (33751784998, 1m 03s). The most recent log
+      shows `ruff` clean, `mypy` with no issues across 38 source files and then
+      across `main.py`, `tests/unit` at 289 passed and 2 skipped, `tests/gui` at
+      179 passed, and the weights-only step at 10 skipped. The step ahead of the
+      GUI tests printed `Qt 6.11.2 on platform offscreen`, so the hand-derived
       list of system libraries the PySide6 wheel links against is now observed
-      rather than reasoned — a runner loaded the offscreen plugin with exactly
-      that list installed and nothing more. *(The AlchemyFace precedent that
-      prompted the suspicion — a publish workflow advertising "the same checks as
-      CI" that silently skipped every GUI test, and a wheel check reporting a leak
-      that did not exist because it ran from the wrong directory — is why the log
-      was read line by line instead of trusting the tick.)*
-- [ ] Re-run CI after the current round of workflow edits. A green tick belongs to
-      the revision that earned it: `ci.yml` has been changed since `51aba8a`, and
-      those changes have not been through a runner. Nothing is wrong with them —
-      they simply have no evidence behind them yet.
+      rather than reasoned. *(The AlchemyFace precedent that prompted the
+      suspicion — a publish workflow advertising "the same checks as CI" that
+      silently skipped every GUI test, and a wheel check reporting a leak that did
+      not exist because it ran from the wrong directory — is why the log was read
+      line by line instead of trusting the tick.)*
+- [x] Re-run CI after the round of workflow edits that followed `51aba8a`.
+      `ci.yml` was last touched in `4ba3cdb`, and the runs on `4ba3cdb` and
+      `f3d42ab` were both green, so the workflow as it stands is the workflow that
+      has met a runner.
 - [x] **The shutdown abort is fixed, and it was onnxruntime telemetry.** The suite
       used to report green, print its pass line and then die in interpreter shutdown
       with `libc++abi: terminating due to uncaught exception of type
@@ -238,13 +206,91 @@ checking.
       0 aborts with it, 4 without. Keep measuring runs as
       `pytest -q > out 2>&1; rc=$?` regardless — `pytest -q | tail -1` reports
       `tail`'s status and would hide the next one exactly as well as it hid this one.
+- [x] Release metadata: version read from `alchemypose.__version__` and nowhere
+      else, SPDX licence expression with `license-files`, the full classifier and
+      keyword set, and `project.urls`. Verified on the built artefacts — the wheel
+      is 79 KB over 45 entries with no weights and no fixtures, the sdist 74 KB
+      with no tests, and `twine check` passes on both.
+- [x] Make the bare `alchemypose` open the window rather than print a page of
+      help, with `--version` answered during parsing and every subcommand — and
+      every *mistyped* subcommand — still reaching what it named.
+
+---
+
+## Open — v1
+
+### Missing tests, in the order they matter
+- [ ] **`YoloxDetector._parse` and `detect` have no coverage that can fail.**
+      `tests/unit/test_detector.py` tests `nms` and `letterbox` and nothing else,
+      and while `tests/unit/test_rtmw_wiring.py` does drive the real detector over
+      stubbed sessions, every stub it feeds emits class-0 rows that do not overlap
+      — so nothing in the suite exercises either behaviour the two methods add.
+      Measured on the release tree: dropping `is_person` from the mask in `_parse`
+      leaves the whole suite green, and replacing `keep = nms(...)` in `detect`
+      with every row kept leaves it green too. What is missing is a pair of unit
+      tests over a hand-built `(dets, labels)` pair — one carrying a high-scoring
+      class-1 row that must not come back as a person, one carrying two boxes over
+      the same person that must come back as one. Both are cheap: neither needs a
+      session, a model file or a display. *(The third candidate is now covered:
+      `letterbox` padding with 0 instead of 114 turns three tests red, since
+      `test_infer_hands_the_detector_raw_letterboxed_pixels` went in with
+      `4ba3cdb`.)*
+- [ ] **Nothing in the suite can detect a miscalibrated opacity constant.**
+      `tests/gui/test_polish.py` derives its expectations *from* the constants it
+      is checking — `CONFIDENT = (1.0 + FULL_OPACITY_ABOVE) / 2.0`, and the dash
+      cases are written at `DASH_BELOW` and `DASH_BELOW - 0.01` — so it pins the
+      shape of `confidence_opacity` and slides along with whatever the constants
+      happen to be. Restoring the values that shipped wrong, `DASH_BELOW = 0.5`
+      and `FULL_OPACITY_ABOVE = 0.8`, leaves the whole suite green. What is
+      missing is a test against a realistic score distribution — the fixture
+      percentiles the constants were calibrated on — asserting that the dashed
+      fraction and the full-opacity fraction stay inside the intended band. With
+      the old constants that fraction was 51 dashed out of 61 bones drawn and not
+      one at full opacity, so the band is easy to state.
 - [ ] `tests/unit/test_readme.py` — assert the README names the install command,
       the launch command, the download size, the model and its licence. Prose
       about being kept current is not a mechanism; a test is.
+
+### Deferred minors, to batch into one commit
+- [ ] Nothing calls `PoseOverlay.animate_in()`. It exists, it is tested, and
+      `MainWindow._on_result` is where it belongs — one line.
+- [ ] Nothing calls `PoseOverlay.set_image_dimmed()` either. The photograph is
+      meant to fall back to ~60% opacity once a selection exists, so the skeleton
+      reads as the subject — `theme.DIMMED_IMAGE_OPACITY` is already 0.6 and the
+      method already applies it. `SelectionController`'s `select_group` /
+      `solo_group` / `clear` are the call sites.
+- [ ] Move `PEAK_SCALE` onto `ModelSpec` in `weights.py`. It is a per-model
+      constant like `input_size`, and it currently lives in `rtmw.py` away from
+      everything else that describes a model. Mechanical.
+- [ ] `SelectionController._emphasised` and `PoseOverlay._emphasis` track
+      overlapping state and can legitimately disagree while soloed. Deliberate for
+      now; revisit if any panel reads emphasis from both.
+- [ ] A keypoint with no peak is zeroed in *model-input* space and then affine
+      untransformed, so it lands at the crop's top-left corner rather than at the
+      image origin — confirmed by pushing an all-zero SimCC pair through the real
+      decoder and transform. Harmless while it is hidden, but at threshold 0.0 it
+      is drawn there.
+- [ ] `ruff format` reports "34 files would be reformatted, 43 files already
+      formatted" over `src tests main.py`. The project gates on `ruff check`,
+      which passes; decide whether to adopt the formatter and do it in one commit,
+      or say in the README that it is deliberately not used.
+
+### The release itself
+- [ ] Tag `v1.0.0` and upload the built wheel and sdist to PyPI. This is the last
+      step of the 1.0.0 release and the only one still outstanding: the artefacts
+      build clean and pass `twine check`, and `CHANGELOG.md`'s link references
+      point at that exact tag name, so the tag has to be `v1.0.0` and not `1.0.0`.
+      PyPI does not allow a version to be re-uploaded, so anything wrong in the
+      artefact costs a version number.
 - [ ] A screenshot of the window with a multi-person image and the skeleton
       visible. This is a portfolio piece and the README is the first thing seen —
-      and it is currently a page about a visual tool with no picture on it.
-- [ ] Tag and publish. The wheel must stay small — no weights, no fixtures.
+      and it is currently a page about a visual tool with no picture on it. A
+      screenshot on the PyPI page needs an absolute URL to a publicly reachable
+      image, which the repository cannot serve while it is private.
+- [ ] Open the window on Windows and on Linux at least once. The GUI suite proves
+      the widgets construct and behave headless on `ubuntu-latest`; nobody has yet
+      seen the application drawn on either platform, and the `gui-scripts` entry
+      point deliberately left out of `pyproject.toml` is waiting on the same.
 
 ---
 
@@ -253,7 +299,8 @@ checking.
 ### v2 · video
 - [ ] `PyAV` for frame-accurate seeking, as an extra rather than a base dependency.
 - [ ] Populate `track_id`. The field has been there since the schema's first
-      commit; this is the version that fills it.
+      commit and every export written so far carries it as `null`; this is the
+      version that fills it.
 - [ ] Scrubbing on the existing latest-request-wins worker — a new frame
       supersedes any queued frame that has not started, which is already how it
       behaves.
@@ -285,9 +332,9 @@ checking.
       Bumping the schema version for a field that did not change is heavy-handed;
       doing nothing means two files can disagree silently.
 - [ ] `Tab` to cycle the selected person was part of the intended keyboard map
-      and is not implemented. The numbered person chips in the toolbar cover the
-      same ground. Add the shortcut, or accept the chips as the answer and stop
-      carrying it as an omission?
+      and is not implemented — nothing in `src/` binds it. The numbered person
+      chips in the toolbar cover the same ground. Add the shortcut, or accept the
+      chips as the answer and stop carrying it as an omission?
 - [ ] rtmlib ships `kpt_thr=0.43` against unbounded SimCC peaks on the same RTMW-l
       weights used here, where it filters almost nothing. Worth reporting upstream.
 - [ ] The `balanced` preset is DWPose-l rather than an RTMW variant, so it is the

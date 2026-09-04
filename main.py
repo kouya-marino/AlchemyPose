@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Open the AlchemyPose window from a checkout: ``python main.py``.
 
-For an installed copy, ``alchemypose gui`` and ``python -m alchemypose gui`` are
-the entry points, and either is preferable — they work from any directory. This
-file covers the case neither does: a bare ``git clone`` with nothing installed,
-where a ``src/`` layout is unimportable until something is.
+For an installed copy, a bare ``alchemypose`` opens the window, and so do
+``alchemypose gui`` and ``python -m alchemypose``; any of them is preferable,
+because they work from any directory. This file covers the case none of them
+does: a bare ``git clone`` with nothing installed, where a ``src/`` layout is
+unimportable until something is.
 
 It also exists because the sibling applications in this suite are started with a
 plain ``python main.py``, so it is the first thing anyone who knows them will
@@ -12,7 +13,9 @@ try here.
 
 The work is delegated to the ``gui`` command rather than reimplemented, so this
 cannot drift from ``alchemypose gui`` — same window, same exit code, and the
-same message if PySide6 is missing.
+same message if PySide6 is missing. The command is named rather than left off,
+even though the bare form now opens the window too: naming it is what keeps this
+launcher meaning one thing if the default ever changes again.
 """
 
 from __future__ import annotations

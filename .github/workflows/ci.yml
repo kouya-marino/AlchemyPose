@@ -10,58 +10,50 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Two jobs, split along the one line that matters: whether the answer can
+# differ per interpreter.
+#
+# `static` cannot. ruff reads `target-version = "py312"` out of pyproject and
+# mypy reads `python_version = "3.12"`; both analyse source against a fixed
+# language level and never execute it, so the interpreter that invokes them is
+# not an input to the result. Measured rather than assumed — run under 3.14 on
+# this tree, ruff prints `All checks passed!` and mypy `Success: no issues found
+# in 38 source files`, character for character what they print under 3.12.
+# Three copies of one answer is not a broader gate, only a longer log and two
+# more chances for a flaky download to redden a green push.
+#
+# `test` can. Bytecode, the stdlib, and every C-extension wheel underneath this
+# package — numpy, onnxruntime, OpenCV, shiboken and the Qt binding — are built
+# per interpreter and change between 3.12, 3.13 and 3.14. The suite is the only
+# thing here that runs any of it, so the suite is what gets the matrix: the
+# expensive part scales with what the package claims, and the repetition that
+# would prove nothing does not happen.
+#
+# What the split costs is one extra dependency install. What it buys back is
+# the apt step — `static` needs PySide6 on disk for its type stubs but never
+# loads Qt, so it skips the system libraries entirely — and a named red X, so a
+# lint failure is legible as a lint failure instead of hiding inside whichever
+# interpreter leg happened to reach it first. The jobs run concurrently, so
+# none of this costs wall-clock.
+
 jobs:
-  # One job, five gates, in the order a developer runs them locally: lint, then
-  # types, then the tests that need nothing, then the tests that need a Qt
-  # platform, and last the weights-only tests — which have nothing to run here
-  # and say so. Splitting them into parallel jobs would mean installing PySide6
-  # (~80 MB of wheel) three times to save a minute.
-  ci:
+  # Once, on the floor. Not on the newest interpreter: the floor is the version
+  # mypy is configured to analyse against, and pinning the runner to the same
+  # number keeps the one place that reads `python_version` honest.
+  static:
+    name: lint + types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # 3.12 only, and deliberately not a matrix. pyproject pins
-      # requires-python to ">=3.12,<3.13": numpy 2.5.2 ships type stubs written
-      # in 3.12 syntax, so mypy cannot even parse them under 3.11 — a 3.11 entry
-      # would not be a broader test, it would be a guaranteed red X.
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      # PySide6 bundles its own libQt6*.so files, but those are linked against
-      # system libraries a bare runner does not carry. Every package below
-      # answers a DT_NEEDED entry of a library the *offscreen* path actually
-      # loads — read out of the manylinux wheel's ELF headers, not guessed:
-      #
-      #   libegl1         libEGL.so.1        <- libQt6Gui
-      #   libgl1          libGL.so.1         <- libQt6Gui, libQt6Widgets,
-      #                                         libqoffscreen, QtGui.abi3.so
-      #   libx11-6        libX11.so.6        <- libQt6Gui, libqoffscreen
-      #   libxkbcommon0   libxkbcommon.so.0  <- libQt6Gui, libQt6Widgets,
-      #                                         libqoffscreen
-      #   libfontconfig1  libfontconfig.so.1 <- libQt6Gui (brings libfreetype6)
-      #   libdbus-1-3     libdbus-1.so.3     <- libQt6DBus, which libQt6Gui needs
-      #   glib            libglib-2.0.so.0   <- libQt6Core, libQt6Gui
-      #
-      # What is deliberately *absent*: libxkbcommon-x11-0 and the whole libxcb-*
-      # set. Those are linked by libQt6XcbQpa and libqxcb — the X11 platform
-      # plugin — and QT_QPA_PLATFORM=offscreen never loads it. Installing them
-      # would only make the runner slower and the reason for the list untrue.
-      # libz, libzstd and libstdc++ are dependencies of dpkg and gcc, so they
-      # are already on every runner.
-      - name: System libraries PySide6 links against
-        run: |
-          # Ubuntu's 64-bit time_t transition renamed glib's runtime package in
-          # 24.04. Take whichever name this release actually has, so a future
-          # ubuntu-latest cannot fail here on a package name alone.
-          glib=libglib2.0-0t64
-          apt-cache show "$glib" >/dev/null 2>&1 || glib=libglib2.0-0
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libx11-6 libxkbcommon0 \
-            libfontconfig1 libdbus-1-3 "$glib"
-
+      # No apt step here on purpose. Nothing in this job loads Qt — mypy reads
+      # PySide6's .pyi stubs off disk and ruff never imports anything — so the
+      # libQt6 dependency list the test job installs would be time spent on
+      # libraries this job cannot open.
       - name: Install package (with dev extras)
         run: pip install -e ".[dev]"
 
@@ -92,6 +84,94 @@ jobs:
           mypy
           mypy main.py
 
+  # Four gates, in the order a developer runs them locally: the tests that need
+  # nothing, a proof that the Qt platform plugin loads, the tests that need it,
+  # and last the weights-only tests — which have nothing to run here and say so.
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Never cancel the siblings. The question a matrix exists to answer is
+      # *which* interpreters break, and fail-fast would answer it with "at
+      # least one", having killed the legs that would have said more.
+      fail-fast: false
+      matrix:
+        # Exactly what requires-python claims — ">=3.12", a floor with no
+        # ceiling — so every interpreter from the floor to the newest release
+        # gets a leg, and the claim never outruns the test. When 3.15 ships,
+        # it is added here and to the classifiers in pyproject together.
+        #
+        # There is no 3.11 entry and there will not be one: that is the floor,
+        # and it is a measured constraint rather than a preference — numpy
+        # 2.5.2 ships type stubs written in 3.12 syntax that mypy cannot even
+        # parse under 3.11. What that reasoning never justified is the other
+        # end. It argued for a floor; it was read as "3.12 and nothing else",
+        # and the `<3.13` ceiling it produced was refusing `pip install` on
+        # 3.13 and 3.14 — the versions most people are on — over a constraint
+        # that belongs to a development tool and not to the runtime.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # PySide6 bundles its own libQt6*.so files, but those are linked against
+      # system libraries a bare runner does not carry. Every package below
+      # answers a DT_NEEDED entry of a library the *offscreen* path actually
+      # loads — read out of the manylinux wheel's ELF headers, not guessed:
+      #
+      #   libegl1         libEGL.so.1        <- libQt6Gui
+      #   libgl1          libGL.so.1         <- libQt6Gui, libQt6Widgets,
+      #                                         libqoffscreen, QtGui.abi3.so
+      #   libx11-6        libX11.so.6        <- libQt6Gui, libqoffscreen
+      #   libxkbcommon0   libxkbcommon.so.0  <- libQt6Gui, libQt6Widgets,
+      #                                         libqoffscreen
+      #   libfontconfig1  libfontconfig.so.1 <- libQt6Gui (brings libfreetype6)
+      #   libdbus-1-3     libdbus-1.so.3     <- libQt6DBus, which libQt6Gui needs
+      #   glib            libglib-2.0.so.0   <- libQt6Core, libQt6Gui
+      #
+      # The list is a property of the Qt build, not of the interpreter, so it
+      # is identical in all three legs. What is deliberately *absent*:
+      # libxkbcommon-x11-0 and the whole libxcb-* set. Those are linked by
+      # libQt6XcbQpa and libqxcb — the X11 platform plugin — and
+      # QT_QPA_PLATFORM=offscreen never loads it. Installing them would only
+      # make the runner slower and the reason for the list untrue. libz,
+      # libzstd and libstdc++ are dependencies of dpkg and gcc, so they are
+      # already on every runner.
+      - name: System libraries PySide6 links against
+        run: |
+          # Ubuntu's 64-bit time_t transition renamed glib's runtime package in
+          # 24.04. Take whichever name this release actually has, so a future
+          # ubuntu-latest cannot fail here on a package name alone.
+          glib=libglib2.0-0t64
+          apt-cache show "$glib" >/dev/null 2>&1 || glib=libglib2.0-0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libx11-6 libxkbcommon0 \
+            libfontconfig1 libdbus-1-3 "$glib"
+
+      # This is also the step that proves requires-python is satisfiable on
+      # each interpreter in the matrix: a resolver that cannot place numpy,
+      # onnxruntime, OpenCV or PySide6 on 3.13 or 3.14 fails here, loudly,
+      # before a single test runs.
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      # Which interpreter and which binary wheels a leg actually resolved to.
+      # Without this, a leg that silently fell back to a different numpy or Qt
+      # build is indistinguishable in the log from one that did not.
+      - name: What this leg is actually running
+        run: |
+          python -VV
+          # No trailing space in the pattern: pip prints the Qt binding as
+          # "PySide6_Essentials", so anchoring on "PySide6 " would silently drop
+          # the one line a per-interpreter check most wants to see. `|| true`
+          # because this step reports, it does not judge — a diagnostic that can
+          # fail a release is a liability.
+          pip list | grep -iE '^(numpy|onnxruntime|opencv|pyside6|shiboken6)' || true
+
       # core/ and inference/ with no weights, no display and no network — every
       # download in these tests is monkeypatched out. This is where the
       # inference behaviour that CI can actually prove lives: test_rtmw_wiring
@@ -104,7 +184,9 @@ jobs:
 
       # A widget cannot be constructed without a platform plugin, so prove the
       # plugin loads before blaming the tests. offscreen is a real QPA plugin
-      # that renders into a buffer: no xvfb, no display, no X server.
+      # that renders into a buffer: no xvfb, no display, no X server. Per leg,
+      # because a Qt binding is built per interpreter and this is the cheapest
+      # place for a 3.13 or 3.14 wheel that cannot load to say so plainly.
       - name: Confirm Qt starts headless
         env:
           QT_QPA_PLATFORM: offscreen
@@ -124,12 +206,14 @@ jobs:
       # Collected, not relied on. Every test in tests/integration is marked
       # `models` and skips itself when the ~486 MB of ONNX files are absent
       # from the cache, which on a runner they always are — CI has no business
-      # downloading them. So a green tick on this step means SKIPPED, never
-      # PASSED: read the SKIPPED lines in the log before believing anything
-      # here was exercised. What the step does buy is collection — an import
-      # error, a renamed fixture or a helper that stopped matching the code
-      # surfaces on the push that caused it instead of on the next developer
-      # who runs the suite with weights on their machine.
+      # downloading them, least of all three times. So a green tick on this
+      # step means SKIPPED, never PASSED: read the SKIPPED lines in the log
+      # before believing anything here was exercised. What the step does buy is
+      # collection — an import error, a renamed fixture or a helper that
+      # stopped matching the code surfaces on the push that caused it instead
+      # of on the next developer who runs the suite with weights on their
+      # machine. Collection is genuinely per-interpreter, so it stays in the
+      # matrix: a module that fails to import on 3.14 alone fails here.
       #
       # What a skip here does not cost: the wiring. tests/unit/test_rtmw_wiring
       # puts stub sessions behind the real engine, so every push still proves
@@ -147,6 +231,8 @@ jobs:
       # same: a stub proves infer calls it, only a real photograph shows the
       # keypoints that come out are anatomically coherent, and only real
       # onnxruntime rejects an input the stub swallows. So read a skip here as
-      # "the plumbing is guarded, the numbers in it are not".
+      # "the plumbing is guarded, the numbers in it are not". With weights
+      # cached these ten do run: on this machine, under Python 3.14.7, all ten
+      # passed against the real ONNX graphs.
       - name: Weights-only tests (skipped without cached weights)
         run: pytest tests/integration
