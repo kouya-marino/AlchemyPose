@@ -1,0 +1,558 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# The one irreversible thing this repository does. PyPI never allows
+# re-uploading a version, and yanking a release does not give its number back —
+# 1.0.0 is spent the moment an upload succeeds, whether or not what went up was
+# right. A tag is not evidence that the checks passed, only that someone typed
+# it, so every gate CI runs runs again below on the tagged commit, and the
+# artefacts are inspected after they are built rather than trusted because the
+# build exited zero.
+#
+# "Every gate CI runs" is a promise about shape as well as content, so this file
+# mirrors ci.yml's split rather than only its steps. `gate` runs the things
+# whose answer cannot depend on the interpreter — the identity walk, the
+# version/tag/badge agreement, ruff and mypy — exactly once. `test` carries the
+# same 3.12/3.13/3.14 matrix as ci.yml, because a release that tested one
+# interpreter while requires-python promises three is not "the same checks", it
+# is a narrower gate wearing the same name. That is the whole reason to matrix
+# it here: the cost is a few extra minutes on a tag push, which happens rarely,
+# and the thing being bought is the only chance to find out — a version that
+# turns out not to work on 3.13 cannot be replaced, only yanked and renumbered.
+
+jobs:
+  # Once, on the floor, and on the floor specifically because mypy is
+  # configured to analyse against 3.12 and the runner should not disagree with
+  # the config it is running.
+  gate:
+    name: identity + declarations + lint + types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The identity walk reads the whole history; the default shallow
+          # clone would hand it a single commit and pass regardless.
+          fetch-depth: 0
+
+      # A repo-local git config does not travel with a clone, so a checkout on
+      # another machine inherits that machine's global identity. A tag push
+      # carries no synthetic merge ref, so unlike ci.yml this needs no `ref:`.
+      - name: Reject unexpected commit identities
+        run: |
+          ALLOWED='prashantrawatmailbox@gmail.com'
+          # Authors are the contributors — this is the check that matters, and
+          # it stays absolute.
+          BAD=$(git log --format='%ae' | sort -u | grep -vx "$ALLOWED" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::commits authored by someone other than ${ALLOWED}:"
+            printf '  %s\n' $BAD
+            exit 1
+          fi
+          # Committers may additionally be GitHub itself, because a merge made
+          # with the merge button is always committed by `GitHub
+          # <noreply@github.com>`. That is a mechanical fact about who applied
+          # the commit, not a claim about who wrote it.
+          BAD_C=$(git log --format='%ce' | sort -u \
+                  | grep -vx "$ALLOWED" | grep -vx 'noreply@github.com' || true)
+          if [ -n "$BAD_C" ]; then
+            echo "::error::commits committed by an unexpected identity:"
+            printf '  %s\n' $BAD_C
+            exit 1
+          fi
+          echo "every commit is authored by ${ALLOWED}"
+
+      # 3.12 here is the mypy target, not a statement about what the package
+      # supports — the `test` job below carries that, as a matrix, exactly as
+      # ci.yml does. pyproject's requires-python is ">=3.12": a floor, because
+      # numpy 2.5.2 ships type stubs written in 3.12 syntax that mypy cannot
+      # parse under 3.11, and no ceiling, because that argument never produced
+      # one. Nothing in this job executes package code, so the interpreter it
+      # runs on is not an input to any answer it gives.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The version is declared exactly once, in src/alchemypose/__init__.py,
+      # and pyproject reads it back through `dynamic = ["version"]`. So there
+      # is no `project.version` key to read: the sibling projects' check does
+      # `tomllib.load(...)["project"]["version"]`, which here raises KeyError
+      # before it can compare anything. Read the attribute the way setuptools'
+      # `attr:` does — with ast, out of the source — which needs no installed
+      # package and cannot execute project code.
+      - name: Read the declared version
+        id: declared
+        run: |
+          VERSION=$(python - <<'PY'
+          import ast
+          import pathlib
+          import sys
+          import tomllib
+
+          SOURCE = pathlib.Path("src/alchemypose/__init__.py")
+          ATTR = "alchemypose.__version__"
+
+          pyproject = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+
+          # Assert the arrangement rather than assume it. If the version ever
+          # becomes static, or moves to another attribute, this fails loudly
+          # instead of quietly yielding a number nothing reads any more.
+          if "version" not in pyproject["project"].get("dynamic", []):
+              sys.exit("pyproject.toml no longer declares the version dynamic; this check reads the wrong place")
+          attr = pyproject["tool"]["setuptools"]["dynamic"]["version"]["attr"]
+          if attr != ATTR:
+              sys.exit(f"pyproject reads the version from {attr!r}, but this check reads {ATTR!r}")
+
+          version = None
+          for node in ast.parse(SOURCE.read_text(encoding="utf-8")).body:
+              if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                  if any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets):
+                      version = node.value.value
+          if not isinstance(version, str):
+              sys.exit(f"no module-level __version__ string found in {SOURCE}")
+
+          print(version)
+          PY
+          )
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "declared version: ${VERSION}"
+
+      # Without this, several tags pointing at one commit each try to upload
+      # the same version, and only the first can ever succeed.
+      - name: The tag must match the declared version
+        env:
+          DECLARED: ${{ steps.declared.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v${DECLARED}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the version declared in src/alchemypose/__init__.py (${DECLARED}); expected v${DECLARED}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches the declared version ${DECLARED}"
+
+      # The README's badges are static and version-pinned, because the dynamic
+      # `shields.io/pypi/v` one showed a version four releases behind: PyPI's
+      # JSON API serves a stale info.version for a while after an upload,
+      # shields.io caches what it read for three hours, and GitHub's image
+      # proxy then caches shields. Static means it cannot be stale; this step
+      # means it cannot be forgotten. It reads the declared version from the
+      # step above for the same reason that step exists — there is no
+      # project.version here to compare against.
+      #
+      # The Python badge used to be a single number held to the requires-python
+      # floor. Now that requires-python is an open ">=3.12" and the badge names
+      # a range, comparing only its first token would check "3.12" and wave the
+      # rest of the badge through — "3.12 | 3.13" would still pass long after a
+      # 3.15 classifier landed. So the whole badge list is held to the
+      # `Programming Language :: Python ::` classifiers, which are the
+      # machine-readable form of the same claim, and its bottom is held to the
+      # floor as before. Stdlib only, deliberately: this runs before the
+      # install step, so it cannot depend on anything being installed.
+      - name: README badges must match what the project declares
+        env:
+          DECLARED: ${{ steps.declared.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+          import tomllib
+          import urllib.parse
+
+          readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+          declared = os.environ["DECLARED"]
+          failures: list[str] = []
+
+          def key(v: str) -> tuple[int, ...]:
+              return tuple(int(p) for p in v.split("."))
+
+          match = re.search(r"PyPI-v(\d+\.\d+\.\d+)", readme)
+          if match is None:
+              failures.append("no version-pinned PyPI badge in README.md; a dynamic shields.io/pypi/v badge is not acceptable here")
+          else:
+              print(f"declared={declared}  README PyPI badge=v{match.group(1)}")
+              if match.group(1) != declared:
+                  failures.append(f"README PyPI badge says v{match.group(1)} but the package declares {declared}")
+
+          requires = project["requires-python"]
+          floor_match = re.search(r">=\s*(\d+\.\d+)", requires)
+          if floor_match is None:
+              failures.append(f"requires-python {requires!r} has no >= floor to compare the badge against")
+              floor = None
+          else:
+              floor = floor_match.group(1)
+
+          classified = sorted(
+              (c.rsplit("::", 1)[1].strip() for c in project["classifiers"]
+               if re.fullmatch(r"Programming Language :: Python :: \d+\.\d+", c)),
+              key=key,
+          )
+          badge_match = re.search(r"badge/python-([^-\s)]+)-", readme)
+          if badge_match is None:
+              failures.append("no version-pinned Python badge found in README.md")
+              badged: list[str] = []
+          else:
+              badged = [v.strip() for v in urllib.parse.unquote(badge_match.group(1)).split("|") if v.strip()]
+
+          print(f"requires-python={requires}  floor={floor}")
+          print(f"classifiers    ={classified}")
+          print(f"README badge   ={badged}")
+
+          if not classified:
+              failures.append("pyproject declares no 'Programming Language :: Python :: X.Y' classifiers to check the badge against")
+          if badged and classified and badged != classified:
+              failures.append(f"README Python badge lists {badged} but the classifiers list {classified}")
+          if badged and floor is not None and badged[0] != floor:
+              failures.append(f"README Python badge starts at {badged[0]} but requires-python starts at {floor}")
+
+          # requires-python is the installer's rule and the classifiers are the
+          # shop window; a version advertised as supported that requires-python
+          # would refuse is a promise pip breaks. There is no ceiling today —
+          # this fires only if one comes back without the classifiers and the
+          # badge coming back with it, which is exactly how the `<3.13` that
+          # blocked 3.13 and 3.14 went unnoticed.
+          ceiling_match = re.search(r"<\s*(\d+\.\d+)", requires)
+          if ceiling_match is not None:
+              ceiling = ceiling_match.group(1)
+              blocked = [v for v in classified if key(v) >= key(ceiling)]
+              if blocked:
+                  failures.append(f"classifiers advertise {blocked}, but requires-python {requires!r} refuses to install there")
+
+          if failures:
+              for line in failures:
+                  print(f"::error::{line}")
+              sys.exit(1)
+          print(f"badges agree with the package: PyPI v{declared}, Python {' | '.join(badged)}")
+          PY
+
+      # No apt step, for the same reason as ci.yml's `static` job: ruff never
+      # imports anything and mypy reads PySide6's .pyi stubs off disk, so
+      # neither opens a libQt6 the runner would have to be given.
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      # main.py is named explicitly in both because it lives outside src/ and
+      # no glob or package list reaches it.
+      - name: Ruff lint
+        run: ruff check src tests main.py
+
+      - name: Type check
+        run: |
+          mypy
+          mypy main.py
+
+  # The same matrix as ci.yml, for the reason in the header: a release gate
+  # narrower than the daily gate is not a gate, and the number in
+  # requires-python is a promise this is the last chance to check.
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Never cancel the siblings — on a tag, "which interpreters are broken"
+      # is the entire question, and the answer wants to be complete the first
+      # time, not one version per re-run of a spent afternoon.
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Exactly the list ci.yml installs, and for the same reason: PySide6
+      # bundles its own libQt6*.so files, which are linked against system
+      # libraries a bare runner does not carry. Every entry answers a DT_NEEDED
+      # of a library the *offscreen* path actually loads, read out of the
+      # manylinux wheel's ELF headers — ci.yml carries the per-library
+      # derivation. Deliberately absent: libxkbcommon-x11-0 and the libxcb-*
+      # set, which belong to the X11 platform plugin that
+      # QT_QPA_PLATFORM=offscreen never loads. There is no xvfb in this project
+      # at all; copying a sibling's xvfb/xcb list would install packages
+      # nothing here opens.
+      - name: System libraries PySide6 links against
+        run: |
+          # Ubuntu's 64-bit time_t transition renamed glib's runtime package in
+          # 24.04. Take whichever name this release actually has, so a future
+          # ubuntu-latest cannot fail a release on a package name alone.
+          glib=libglib2.0-0t64
+          apt-cache show "$glib" >/dev/null 2>&1 || glib=libglib2.0-0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libx11-6 libxkbcommon0 \
+            libfontconfig1 libdbus-1-3 "$glib"
+
+      # Also the step that proves requires-python is satisfiable on this
+      # interpreter: a resolver that cannot place numpy, onnxruntime, OpenCV or
+      # PySide6 on 3.13 or 3.14 fails here, before the tag is spent.
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: What this leg is actually running
+        run: |
+          python -VV
+          # No trailing space in the pattern: pip prints the Qt binding as
+          # "PySide6_Essentials", so anchoring on "PySide6 " would silently drop
+          # the one line a per-interpreter check most wants to see. `|| true`
+          # because this step reports, it does not judge — a diagnostic that can
+          # fail a release is a liability.
+          pip list | grep -iE '^(numpy|onnxruntime|opencv|pyside6|shiboken6)' || true
+
+      - name: Unit tests
+        run: pytest tests/unit
+
+      # A widget cannot be constructed without a platform plugin, so prove the
+      # plugin loads before blaming the tests. offscreen renders into a buffer:
+      # no xvfb, no display, no X server.
+      - name: Confirm Qt starts headless
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -c "
+          from PySide6.QtCore import qVersion
+          from PySide6.QtWidgets import QApplication
+          app = QApplication([])
+          print('Qt', qVersion(), 'on platform', app.platformName())
+          "
+
+      - name: GUI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/gui
+
+      # Collected, not relied on. Every test here is marked `models` and skips
+      # itself when the ~486 MB of ONNX files are absent from the cache, which
+      # on a runner they always are. A green tick on this step means SKIPPED,
+      # never PASSED — what it buys is collection, so an import error or a
+      # renamed fixture surfaces on the release rather than on the next
+      # developer who runs the suite with weights on their machine. Collection
+      # is per-interpreter, which is why it stays inside the matrix.
+      - name: Weights-only tests (skipped without cached weights)
+        run: pytest tests/integration
+
+  publish:
+    needs: [gate, test]
+    runs-on: ubuntu-latest
+    permissions:
+      # Declaring any permission replaces the whole default set, so contents
+      # must be granted back explicitly — without it checkout cannot read the
+      # repository and fails before anything else can.
+      contents: read
+      id-token: write  # required for PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+
+      # One interpreter here, and 3.12 on purpose. What this job produces is a
+      # `py3-none-any` wheel plus an sdist — pure Python, no compiled
+      # extensions, no interpreter tag — so the artefact built on 3.12 is
+      # byte-for-byte the artefact a 3.14 runner would have built, and building
+      # it three times would upload nothing different. Building on the floor
+      # additionally keeps the wheel's own metadata honest: setuptools records
+      # requires-python from pyproject rather than from the runner, but if that
+      # ever stopped being true, the floor is the version that would notice.
+      #
+      # The smoke test at the bottom installs that wheel into a 3.12
+      # virtualenv, and one interpreter is enough there because the `test` job
+      # above has already run all 492 tests on 3.12, 3.13 and 3.14 against this
+      # same source. What the smoke test adds is orthogonal to the interpreter:
+      # that the *built artefact* — as opposed to the source tree — exposes
+      # working entry points and claims no top-level `main`.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      # The number PyPI records is the one in the built metadata, not the one
+      # in the source tree, so the tag is checked a second time here against
+      # the artefacts that are actually about to be uploaded. The publish
+      # action uploads everything in dist/, so this also refuses to run with
+      # more than one wheel or sdist present.
+      - name: The built metadata must carry the tagged version
+        run: |
+          python - <<'PY'
+          import email
+          import os
+          import pathlib
+          import sys
+          import tarfile
+          import zipfile
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected = tag.removeprefix("v")
+
+          dist = pathlib.Path("dist")
+          built = sorted(p.name for p in dist.iterdir())
+          wheels = sorted(dist.glob("*.whl"))
+          sdists = sorted(dist.glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1 or len(built) != 2:
+              sys.exit(f"expected exactly one wheel and one sdist in dist/, found: {built}")
+
+          def metadata_version(archive: pathlib.Path) -> str | None:
+              if archive.suffix == ".whl":
+                  with zipfile.ZipFile(archive) as zf:
+                      name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+                      raw = zf.read(name)
+              else:
+                  with tarfile.open(archive) as tf:
+                      member = next(
+                          m for m in tf.getmembers()
+                          if m.name.count("/") == 1 and m.name.endswith("/PKG-INFO")
+                      )
+                      handle = tf.extractfile(member)
+                      if handle is None:
+                          sys.exit(f"{archive.name} has no readable PKG-INFO")
+                      raw = handle.read()
+              return email.message_from_bytes(raw)["Version"]
+
+          for archive in (*wheels, *sdists):
+              found = metadata_version(archive)
+              if found != expected:
+                  sys.exit(f"{archive.name} carries version {found}, but tag {tag} would publish {expected}")
+              print(f"{archive.name}: metadata version {found}, matching tag {tag}")
+          PY
+
+      # The source tree's requires-python is what the badge check compares
+      # against, but the string PyPI enforces is the one baked into the built
+      # metadata — pip reads `Requires-Python` from the wheel and the index,
+      # never from pyproject. This is the last point at which the two can be
+      # shown to be the same string, and the first at which a stale ceiling
+      # would become permanent: a wheel published with `<3.13` refuses to
+      # install on 3.13 and 3.14 for as long as that version exists, and no
+      # edit to this repository can change it afterwards.
+      - name: The built metadata must carry the declared Python range
+        run: |
+          python - <<'PY'
+          import email
+          import pathlib
+          import sys
+          import tomllib
+          import zipfile
+
+          declared = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["requires-python"]
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as zf:
+              name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              metadata = email.message_from_bytes(zf.read(name))
+
+          built = metadata["Requires-Python"]
+          print(f"pyproject requires-python={declared!r}  wheel Requires-Python={built!r}")
+          if built != declared:
+              sys.exit(f"the wheel would publish Requires-Python {built!r}, but pyproject declares {declared!r}")
+
+          classifiers = [c for c in metadata.get_all("Classifier") or [] if c.startswith("Programming Language :: Python :: ")]
+          print("wheel Python classifiers:")
+          for line in classifiers:
+              print(f"  {line}")
+          PY
+
+      # .gitignore and the absence of a MANIFEST.in decide what a sdist sweeps
+      # up, and both have been trusted once too often elsewhere in this suite.
+      # Matching on path components rather than a loose substring keeps this
+      # from firing on a file that merely has "docs" in its name, and strips
+      # the sdist's alchemypose-1.0.0/ wrapper so a shipped tests/ is compared
+      # as a top-level directory instead of never matching at all.
+      - name: Refuse to ship weights, test data, docs or the test suite
+        run: |
+          python - <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+          import zipfile
+
+          # The ~486 MB of ONNX weights are fetched at runtime into the OS
+          # cache and are Apache-2.0 material that is not ours to redistribute;
+          # test-data/ and tests/ are the project's own scaffolding; docs/ is
+          # git-ignored working material a build from a dirty tree could still
+          # pick up.
+          BANNED_DIRS = {"docs", "test-data", "tests"}
+          BANNED_SUFFIXES = (".onnx", ".pt", ".npy", ".npz")
+
+          def members(archive: pathlib.Path) -> list[str]:
+              if archive.suffix == ".whl":
+                  with zipfile.ZipFile(archive) as zf:
+                      return zf.namelist()
+              with tarfile.open(archive) as tf:
+                  return tf.getnames()
+
+          archives = sorted(pathlib.Path("dist").iterdir())
+          if not archives:
+              sys.exit("dist/ is empty; nothing was built")
+
+          offenders: list[str] = []
+          for archive in archives:
+              for name in members(archive):
+                  parts = name.split("/")
+                  if archive.name.endswith(".tar.gz"):
+                      parts = parts[1:]
+                  if BANNED_DIRS.intersection(parts) or name.endswith(BANNED_SUFFIXES):
+                      offenders.append(f"{archive.name}: {name}")
+
+          if offenders:
+              print("::error::the distribution ships files that must never be published")
+              for line in offenders:
+                  print(f"  {line}")
+              sys.exit(1)
+
+          for archive in archives:
+              print(f"{archive.name}: {len(members(archive))} members, no weights, test data, docs or tests")
+          PY
+
+      # main.py is a checkout convenience for a bare clone with nothing
+      # installed. Packaging it would install a top-level `main` module into
+      # site-packages, which is not ours to claim. The pattern is anchored on
+      # the space unzip prints before the name, so alchemypose/__main__.py and
+      # gui/main_window.py do not trip it.
+      - name: The root launcher must not be packaged
+        run: |
+          if unzip -l dist/*.whl | grep -qE ' main\.py$| main/'; then
+            echo "::error::main.py leaked into the wheel as a top-level module"
+            unzip -l dist/*.whl
+            exit 1
+          fi
+          echo "the wheel claims no top-level main"
+
+      # No system libraries are needed for this: importing alchemypose does not
+      # pull in Qt (App is resolved lazily) and the CLI path reaches only
+      # typer, platformdirs and the stdlib. If that ever stops being true, this
+      # step is where it shows up.
+      - name: Verify the wheel imports and every entry point runs
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/python -c "import alchemypose; print('import OK', alchemypose.__version__)"
+          INSTALLED=$(/tmp/smoke/bin/alchemypose version)
+          echo "the installed console script says ${INSTALLED}"
+          [ "$INSTALLED" = "${GITHUB_REF_NAME#v}" ] || {
+            echo "::error::the installed alchemypose says ${INSTALLED}, but tag ${GITHUB_REF_NAME} publishes ${GITHUB_REF_NAME#v}"
+            exit 1
+          }
+          /tmp/smoke/bin/python -m alchemypose version
+          /tmp/smoke/bin/alchemypose --version
+          # Run from /tmp, not the workspace: the checkout's own main.py sits in
+          # the working directory and would be importable via sys.path[0],
+          # making this fail for a reason that has nothing to do with the wheel.
+          cd /tmp
+          if leaked=$(/tmp/smoke/bin/python -c "import main; print(main.__file__)" 2>/dev/null); then
+            echo "::error::the wheel installed a top-level main module at ${leaked}"
+            exit 1
+          fi
+          echo "no top-level main installed, as intended"
+
+      # attestations: false on purpose. The attestation step signs through
+      # sigstore and logs to Rekor, and those intermittently return 502 — which
+      # fails the job before the upload, on a tag that is now spent for a
+      # reason unrelated to this package.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: false

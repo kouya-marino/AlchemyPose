@@ -7,9 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-v1, in progress. Nothing has been released: no tag, nothing on PyPI, and every
-commit so far sits on `main`. This section is therefore the entire history of
-the project.
+Nothing yet. v2 is video — upload and scrub, per-frame overlay, tracking,
+temporal smoothing. `versions.md` says why it is cheap.
+
+## [1.0.0] — 2026-09-03
+
+The first release, and the whole of v1: a photograph goes in, and every person
+in it comes back with 133 COCO-WholeBody keypoints on a canvas whose parts can
+be shown, hidden, isolated and inspected. Everything below shipped in it, so
+this entry is also the entire history of the project — every commit to date sits
+on `main`, from the scaffold to here.
 
 The layering was deliberate and is enforced rather than intended. `core/` —
 topology, schema, presets, serialisation, the H36M mapping — imports neither Qt
@@ -65,7 +72,11 @@ than Fixed: nothing in this repository was ever broken by it.
   with latest-request-wins semantics, and no Qt import anywhere in it, so it is
   tested headless. `gui/bridge.py` is the only adapter between it and Qt signals.
 
-- **`alchemypose` CLI** — `gui`, `image`, `models list|fetch|clear`, `version`.
+- **`alchemypose` CLI** — the bare command, plus `gui`, `image`,
+  `models list|fetch|clear`, `version` and `--version`. Typing `alchemypose` with
+  no subcommand opens the window, because that is what someone types straight
+  after installing it and a page of help is not what they came for; a subcommand,
+  and a *mistyped* subcommand, both still reach the command they named.
   `alchemypose image photo.jpg --preset performance --json out.json --csv out.csv`
   runs the whole pipeline with no display and no Qt in the process.
 
@@ -106,11 +117,11 @@ than Fixed: nothing in this repository was ever broken by it.
   points are zero-length strokes, so thinning there would leave nothing at all.
   `lod.py` imports no Qt, so the thresholds are tested without a widget.
 
-  The **Face** chip now also calls `zoom_to_rect` on the face bounds, so it
-  delivers the magnification a separate face mode would have given, on the same
-  canvas and with no second viewport. Clicking it in the seconds before a
-  detection returns is harmless: the bounds are empty then, and `zoom_to_rect`
-  ignores an empty rectangle.
+  The **Face** chip also calls `zoom_to_rect` on the face bounds, so it delivers
+  the magnification a separate face mode would have given, on the same canvas and
+  with no second viewport. Clicking it in the seconds before a detection returns
+  is harmless: the bounds are empty then, and `zoom_to_rect` ignores an empty
+  rectangle.
 
 - **Export, as three plain functions under an Export menu.** `gui/export.py`
   offers `export_json`, `export_csv` and `export_png`, each taking what it needs
@@ -131,36 +142,47 @@ than Fixed: nothing in this repository was ever broken by it.
   same reason `Reporter` is: no test opens one.
 
 - **`track_id`, `keypoints_3d` and `space_3d` exist on `PersonPose` from the first
-  commit of the schema, unpopulated.** They cost nothing now and they are what
-  makes v2 and v3 additive instead of a schema migration. See `versions.md`.
+  commit of the schema (`3c6d490`), unpopulated**, as do `PoseFrame.frame_index`
+  and `timestamp_s`. They cost nothing now and they are what makes v2 and v3
+  additive instead of a schema migration. See `versions.md`.
+
+- **Packaging, so the thing can be installed rather than cloned.** A wheel and an
+  sdist that carry the package and `py.typed` and nothing else: measured on the
+  1.0.0 artefacts, the wheel is 79 KB across 45 entries with no `.onnx`, `.jpg`
+  or `.png` in it, and the sdist is 74 KB with no tests and no fixtures. The
+  version has one home — `alchemypose.__version__`, read out of the source by
+  setuptools' `attr:` without importing anything — so `pip show`, `alchemypose
+  --version` and the package cannot disagree. `twine check` passes on both files.
 
 - **A README that describes what exists**, and a CI workflow. The README covers the
   window and its gestures, the CLI with transcripts taken from real runs, and what a
-  confidence score means; its timing table now says what it measures — the pose model
+  confidence score means; its timing table says what it measures — the pose model
   alone, per detected person, with the detector's per-frame cost stated separately —
-  rather than leaving the reader to guess. CI runs ruff, mypy, the unit tests and then
-  the GUI suite under `QT_QPA_PLATFORM=offscreen`, on Python 3.12 only. No step on a
-  runner downloads weights, so a push can never pull the 464 MB of ONNX files; the
-  cache check inside the `models`-marked tests is the backstop, not the guarantee.
+  rather than leaving the reader to guess. CI runs ruff, mypy, the unit tests, the
+  GUI suite under `QT_QPA_PLATFORM=offscreen`, and last the weights-only tests that
+  have nothing to run on a runner and say so. Python 3.12 only. No step on a runner
+  downloads weights, so a push can never pull the 464 MB of ONNX files; the cache
+  check inside the `models`-marked tests is the backstop, not the guarantee.
 
   **That workflow has run, and it passed.** It went in with `e9aebc2` and GitHub
-  registered it on that same push; three runs have completed, all pushes to `main`,
-  all successful — `e9aebc2` in 55s, `88a659e` in 1m 02s, `51aba8a` in 58s, on
-  `ubuntu-latest`. The last of them logged `ruff` clean, `mypy` reporting no issues
-  across 38 source files, 256 passed and 2 skipped in `tests/unit`, and 162 passed in
-  `tests/gui` — fewer than the local totals below, because tests have been added since
-  `51aba8a` — and the probe step ahead of the GUI tests printed `Qt 6.11.2 on
-  platform offscreen`. That last line is the one that mattered: the list of system
-  libraries the PySide6 wheel links against was derived by reading the wheel's ELF
-  headers, and it was reasoning rather than observation until a runner loaded the
-  offscreen plugin with exactly that list installed and nothing more.
+  registered it on that same push. Six runs have completed, all pushes to `main`,
+  all successful — `e9aebc2` (55s), `88a659e` (62s), `51aba8a` (58s), `03a701f`
+  (61s), `4ba3cdb` (59s) and `f3d42ab` (63s), on `ubuntu-latest`. `ci.yml` was last
+  edited in `4ba3cdb`, and two of those runs are on it or later, so the workflow as
+  it stands is the workflow that has been exercised. The last run logged `ruff`
+  clean, `mypy` reporting no issues across 38 source files and then across `main.py`,
+  289 passed and 2 skipped in `tests/unit`, 179 passed in `tests/gui`, and 10 skipped
+  in the weights-only step — 480 tests as of that commit, fewer than the local totals
+  below, because tests have been added since. The probe step ahead of the GUI tests
+  printed `Qt 6.11.2 on platform offscreen`. That last line is the one that mattered:
+  the list of system libraries the PySide6 wheel links against was derived by reading
+  the wheel's ELF headers, and it was reasoning rather than observation until a runner
+  loaded the offscreen plugin with exactly that list installed and nothing more.
 
-  Two things it still cannot speak to. CI never touches the weights, so CoreML, the
-  timings and every score distribution recorded here remain single-machine facts. And
-  a green tick belongs to the revision that earned it — `ci.yml` has been edited since
-  `51aba8a`, and those edits have not been through a runner. Separately, the README
-  still has no screenshot, on a project whose stated goal is that it look striking in
-  one.
+  One thing it still cannot speak to. CI never touches the weights, so CoreML, the
+  timings and every score distribution recorded here remain single-machine facts,
+  measured on one Apple-silicon laptop. Separately, the README still has no
+  screenshot, on a project whose stated goal is that it look striking in one.
 
 ### Fixed
 
@@ -225,8 +247,9 @@ than Fixed: nothing in this repository was ever broken by it.
   model raises rather than silently assuming 1.0, since a silent default is how
   this went unnoticed. Keypoint positions are bit-identical before and after
   (`np.array_equal` across all five people on both models); only the scores moved.
-  The same sweep now draws 399, 335, 247, 153, 28 and 0 keypoints at thresholds
-  0.0, 0.2, 0.4, 0.6, 0.8 and 0.9.
+  Re-measured for this release on the same fixture, the `performance` preset's 399
+  scores run min 0.094, median 0.490, max 0.858, and the same sweep draws 399, 335,
+  247, 153, 28 and 0 keypoints at thresholds 0.0, 0.2, 0.4, 0.6, 0.8 and 0.9.
 
   The scale table rests on measurement rather than on published configs, and one
   reason is recorded rather than hidden: RTMW-m's config says `beta=1`, but the
@@ -255,6 +278,14 @@ than Fixed: nothing in this repository was ever broken by it.
   the overlay's own fields, so a rebuild *reproduces* the visual state instead of
   forgetting it.
 
+- **The person chips were being discarded by the layer tree.** `SelectionController`
+  wrote the tree's raw selection straight to the overlay, so soloing a group while
+  one person was selected quietly put everybody back on screen while the chip still
+  claimed one. Visibility now has exactly one writer: the controller writes to the
+  tree and stops there, the tree announces, and the window composes both halves —
+  which groups, and which person — in `_effective_selection` before anything reaches
+  the canvas.
+
 - **mypy had been checking nothing.** `[tool.mypy] python_version` was `"3.11"`
   while the installed numpy 2.5.2 ships stubs written with PEP 695 syntax, so
   mypy aborted on the stubs before it reached a single project file. Every "mypy
@@ -274,13 +305,15 @@ than Fixed: nothing in this repository was ever broken by it.
 
 ### Notes
 
-- 442 tests, all of them passing. 277 run with no display at all; 165 are
-  the GUI suite, which sets `QT_QPA_PLATFORM=offscreen` for itself in
-  `tests/gui/conftest.py` rather than requiring it on the command line; 11
-  additionally need cached weights and skip without them. `ruff check src tests` is
-  clean and `mypy` reports zero errors across 38 source files. The total is a reading
-  taken while this entry was written, not a fixed property — it climbs as tests are
-  added.
+- **492 tests, all of them passing**, measured on the release tree with weights
+  cached. 313 run with no display at all (303 unit, 10 integration); 179 are the
+  GUI suite, which sets `QT_QPA_PLATFORM=offscreen` for itself in
+  `tests/gui/conftest.py` rather than requiring it on the command line; 12 of the
+  492 additionally need cached weights, and on a machine without them the run is
+  480 passed and 12 skipped. `ruff check src tests main.py` is clean, and `mypy`
+  reports zero errors across the 38 source files and then across `main.py`, which
+  needs naming separately because it sits outside `src/`. The total is a reading
+  taken at the release, not a fixed property — it climbs as tests are added.
 - **The suite used to pass and then abort, and that is now fixed.** Every test would
   report green, the run would print its pass line, and then the process would die
   during interpreter shutdown with `libc++abi: terminating due to uncaught exception
@@ -314,15 +347,15 @@ than Fixed: nothing in this repository was ever broken by it.
   `onnxruntime.disable_telemetry_events()` is not a substitute: it stops later events
   being logged but leaves the manager and its uploader running.
 
-  Re-measured for this entry, interleaved, 40 runs per arm against trees identical
-  but for that one line: **0 aborts with the variable set, 4 without.** Pooling that
-  with every earlier sample taken in this project — 1 in 12, 1 in 20, 2 in 28, 3 in
-  19, and the 5 in 40 recorded on `f1dd076` — gives 16 aborts in 159 untreated runs,
-  about one in ten, against 0 in 80 treated ones. The headline figure this entry used
-  to carry, roughly two runs in ten, came from the nineteen-run sample alone and was
-  high. The rate moves with machine load and network latency, so the durable claim is
-  the contrast, not the percentage: frequent enough to matter, and now absent.
-  Measure any run as `pytest -q > out 2>&1; rc=$?` in any case — `pytest -q | tail -1`
+  Measured interleaved, 40 runs per arm against trees identical but for that one
+  line: **0 aborts with the variable set, 4 without.** Pooling that with every
+  earlier sample taken in this project — 1 in 12, 1 in 20, 2 in 28, 3 in 19, and the
+  5 in 40 recorded on `f1dd076` — gives 16 aborts in 159 untreated runs, about one
+  in ten, against 0 in 80 treated ones. The headline figure this entry used to carry,
+  roughly two runs in ten, came from the nineteen-run sample alone and was high. The
+  rate moves with machine load and network latency, so the durable claim is the
+  contrast, not the percentage: frequent enough to matter, and now absent. Measure
+  any run as `pytest -q > out 2>&1; rc=$?` in any case — `pytest -q | tail -1`
   reports `tail`'s status and hides an abort completely.
 - **The import boundary is enforced, not just intended.** A subprocess test
   asserts that `import alchemypose` loads zero `PySide6` modules, and running the
@@ -342,11 +375,11 @@ than Fixed: nothing in this repository was ever broken by it.
 
   The regression test came later and could not use the integration fixture: the
   only one is a monochrome 1935 archival photograph, on which a BGR/RGB swap is
-  arithmetically a no-op. It uses synthetic pixels with three distinct channel
-  values, and its expected numbers are independent literals rather than the
-  normalisation formula re-implemented from the test's own constants — an earlier
-  draft did exactly that, and a wrong constant would have cancelled out on both
-  sides and passed.
+  arithmetically a no-op — the three channels are identical to the last unit.
+  It uses synthetic pixels with three distinct channel values, and its expected
+  numbers are independent literals rather than the normalisation formula
+  re-implemented from the test's own constants — an earlier draft did exactly
+  that, and a wrong constant would have cancelled out on both sides and passed.
 
 - The opacity constants shipped wrong for a while and are worth flagging.
   `DASH_BELOW = 0.5` and `FULL_OPACITY_ABOVE = 0.8` were chosen while scores were
@@ -373,24 +406,33 @@ than Fixed: nothing in this repository was ever broken by it.
   raw peak range back through the real decoder and require the resulting
   confidences to stay spread out at both ends, and the integration tests pin,
   per preset, where the median sits, how much survives each of several
-  thresholds, and how much of the 0–1 range does useful filtering. The same
-  revert now turns seven tests red, and only two of those need cached weights —
-  the other five drive the real decoder over stubbed sessions, so the property is
-  guarded even on a machine that has never downloaded a model.
+  thresholds, and how much of the 0–1 range does useful filtering.
 
-  The claim itself has since been sampled rather than assumed, which is the only
-  way it can be worth anything. Four fixes have been put back and the whole suite
-  re-run against the reverted source: the channel-order revert turns two tests
-  red, the person-filter revert twelve, the peak scale seven. The fourth is a
-  second hole. Restoring the opacity constants that shipped wrong — `DASH_BELOW`
-  to 0.5 and `FULL_OPACITY_ABOVE` to 0.8 — leaves the entire suite green, and for
-  the same reason the channel-order test failed to bite: `tests/gui/test_polish.py`
-  builds its expectations *out of* the constants under test, so it pins the way
-  `confidence_opacity` interpolates between them and slides along with whatever
-  the endpoints happen to be. It is carried as an open item in `todo.md`. The
-  accurate form of the claim, then: reverting is the habit here, it has now
-  exposed two fixes that no test could detect, and it has been applied to four of
-  the fixes in this changelog rather than all of them.
+  Every row below was re-measured against the release tree rather than quoted from
+  an earlier draft: one edit to the shipped source, the whole suite run after it,
+  the source put back:
+
+  | Undone in the shipped source | Tests that go red |
+  |---|---|
+  | `PEAK_SCALE["rtmw_l_384x288"]` → 1.0 | 7 (5 of them need no weights) |
+  | `normalise_crop` fed BGR instead of RGB | 5 |
+  | `_effective_selection` stops narrowing to the chosen person | 3 |
+  | `letterbox` pads with 0 instead of 114 | 3 |
+  | `DASH_BELOW` → 0.5 and `FULL_OPACITY_ABOVE` → 0.8 | **0** |
+  | `YoloxDetector._parse` stops filtering on the person class | **0** |
+  | `YoloxDetector.detect` skips its defensive `nms()` call | **0** |
+
+  The three zeros are the honest part of the table. The opacity constants have no
+  guard because `tests/gui/test_polish.py` builds its expectations *out of* the
+  constants under test, so it pins the way `confidence_opacity` interpolates
+  between them and slides along with whatever the endpoints happen to be. The two
+  detector rows are a gap of a different kind: `_parse` and `detect` are exercised
+  — `tests/unit/test_rtmw_wiring.py` drives the real detector over stubbed
+  sessions — but every stub emits class-0 rows that do not overlap, so neither the
+  class filter nor the suppression has anything to do. All three are carried as
+  open items in `todo.md`. The accurate form of the claim, then: reverting is the
+  habit here, seven of this release's behaviours have been through it rather than
+  all of them, and it has found three that no test can detect.
 - Two assumptions written down before the code was run turned out to be wrong, and
   both were caught by running it: an error-recovery test that failed 100 times out of
   100 because two back-to-back submissions meant the second always superseded the
@@ -406,4 +448,5 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/commits/main
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0

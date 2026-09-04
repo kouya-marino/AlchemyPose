@@ -135,6 +135,24 @@ def cache_dir() -> Path:
     return path
 
 
+def human_size(num_bytes: int) -> str:
+    """A download size a person can read: ``58.1 MB``, or ``unknown size`` for 0.
+
+    Decimal units, because that is what the server counts in, what the browser
+    would have shown and what the file listing on this platform says. Quoting a
+    "203 MiB" for a file every other tool calls 213 MB buys precision nobody
+    asked for at the price of a number that appears to disagree with itself.
+
+    ``0`` means the server sent no ``Content-Length``: unknown, not empty.
+    """
+    if num_bytes <= 0:
+        return "unknown size"
+    for unit, scale in (("GB", 1_000_000_000), ("MB", 1_000_000), ("kB", 1_000)):
+        if num_bytes >= scale:
+            return f"{num_bytes / scale:.1f} {unit}"
+    return f"{num_bytes} bytes"
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -188,10 +206,24 @@ def _download(url: str, dest: Path, progress: Callable[[int, int], None] | None 
     or a zip that turns out to be malformed — so an interrupted transfer can
     never orphan a partially written multi-hundred-megabyte file in the cache
     directory.
+
+    ``progress`` is called once with ``(0, total)`` the moment the response
+    headers give a size — before a single byte is written — and then after
+    every chunk with the running byte count. That opening call is the whole
+    point of the callback for anything but a bar: it is the only moment at
+    which a caller can say *which* model is being fetched and *how big* it is
+    while the answer is still worth having. Announcing after the first chunk
+    would be nearly as early, but "nearly" is not a contract, and a caller
+    should not have to know the chunk size to work out whether it has been told
+    yet. ``total`` is ``0`` when the server sends no ``Content-Length``, so a
+    caller drawing a bar has to read that as "length unknown" rather than
+    dividing by it.
     """
     try:
         with urllib.request.urlopen(url) as response:  # noqa: S310 - the URLs are our own constants
             total = int(response.headers.get("Content-Length", 0))
+            if progress is not None:
+                progress(0, total)
             fd, raw_name = tempfile.mkstemp(dir=dest.parent)
             raw_path = Path(raw_name)
             try:
@@ -225,6 +257,12 @@ def ensure(key: str, *, progress: Callable[[int, int], None] | None = None) -> P
     so a concurrent reader of ``target`` can never observe a corrupt or
     partially written file, and a failed verification leaves ``target``
     untouched (and cleans up its own temp file) rather than looping.
+
+    ``progress`` is forwarded to ``_download``, and so is called only once this
+    function has decided to fetch something: the verified-cache-hit return
+    above happens without a single callback. That is what lets a caller be
+    completely silent on a warm cache without first having to ask whether the
+    file was there — it says nothing because it was told nothing.
     """
     spec = REGISTRY.get(key)
     if spec is None:
