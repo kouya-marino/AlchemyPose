@@ -173,6 +173,17 @@ about a visual tool. Nothing is video and nothing is 3D.
 
 ### v2 — video
 
+**Status: built on the `v2-video` branch, not released.** Video opens, analyses in
+the background with a disk cache, plays in real time and scrubs by frame index;
+people are tracked and smoothed at draw time; the webcam runs live; and
+`alchemypose video` does the same headless. One design decision went the other way
+from the plan below: scrubbing does *not* run on the latest-request-wins worker.
+The worker drops frames by design, and playback beside a 3D skeleton and a robot
+needs every one, so a clip gets an offline pass that analyses each frame once and
+playback reads from that. The worker keeps its policy for stills and the webcam,
+where dropping a stale frame is the right call. Measured on Linux with an RTX 4070
+laptop GPU: the 300-frame reference clip analyses in 22 s on `performance`.
+
 **What it is.** Open a video instead of a photograph: a scrubber under the canvas,
 the overlay redrawn per frame, `track_id` populated so a person keeps their
 identity across frames, and temporal smoothing so the skeleton stops shivering.

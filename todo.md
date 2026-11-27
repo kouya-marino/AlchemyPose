@@ -318,19 +318,28 @@ test rigour is worse than no claim, because it stops anyone checking.
 
 ## Later
 
-### v2 · video
-- [ ] `PyAV` for frame-accurate seeking, as an extra rather than a base dependency.
-- [ ] Populate `track_id`. The field has been there since the schema's first
+### v2 · video — built on branch `v2-video`
+- [x] `PyAV` for frame-accurate seeking, as an extra rather than a base dependency.
+      *OpenCV is the fallback; both are held to one contract over generated clips.*
+- [x] Populate `track_id`. The field has been there since the schema's first
       commit and every export written so far carries it as `null`; this is the
       version that fills it.
-- [ ] Scrubbing on the existing latest-request-wins worker — a new frame
-      supersedes any queued frame that has not started, which is already how it
-      behaves.
-- [ ] Temporal smoothing, and a decision about whether smoothed coordinates are
+- [x] *Done differently, on purpose:* scrubbing reads from an offline pass that
+      analyses every frame once, because playback beside 3D and a robot needs every
+      frame and latest-request-wins drops them. The worker keeps its policy for
+      stills and the webcam. ~~Scrubbing on the existing latest-request-wins worker.~~
+- [x] *Decided: applied at render time; stored coordinates stay raw.*
+      Temporal smoothing, and a decision about whether smoothed coordinates are
       stored or applied at render time. *(v1's rule is that coordinates are stored
       raw; smoothing should not be the thing that breaks it.)*
-- [ ] Revisit `rtmlib`'s `PoseTracker` as a reference for the tracking half.
-- [ ] Webcam, which arrives with the video work.
+- [x] *Its two ideas are in: IoU matching, and `--det-interval` cropping from the
+      last pose between detections.* Revisit `rtmlib`'s `PoseTracker` as a
+      reference for the tracking half.
+- [x] Webcam, which arrives with the video work. *Not yet run against a real camera:
+      the tests drive it with a fake capture.*
+- [ ] Export the overlay as a video (MP4), not just the frame on screen as PNG.
+- [ ] Identity can swap when two people cross completely in front of each other;
+      IoU has no appearance model. Revisit if multi-person clips matter.
 
 ### v3 · 3D
 - [ ] RTMW3D in place of RTMW. Same 133-keypoint topology plus a third

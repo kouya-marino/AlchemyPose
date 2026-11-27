@@ -21,8 +21,12 @@ leg, the face on its own.
 > keypoints on a zoomable canvas, driven by a layer tree, preset chips and a
 > confidence slider. The face resolves from contours to individual points as it grows
 > on screen, and the Export menu writes the keypoints as JSON or CSV and the overlay
-> as a PNG. The CLI produces the same result with no window at all. Video and 3D are
-> the next two versions — see [Roadmap](#roadmap).
+> as a PNG. The CLI produces the same result with no window at all.
+>
+> **Unreleased on `main`: video and webcam.** Open a clip instead of a photograph and
+> every frame is analysed once in the background, each person tracked through it,
+> while it already plays and scrubs; or switch on the webcam for live pose. See
+> [Video and webcam](#video-and-webcam). 3D is next — see [Roadmap](#roadmap).
 
 ---
 
@@ -157,6 +161,58 @@ shape of the window. A PNG needs only an open photograph; the two data formats n
 a result. When there is nothing to write yet it says so in the status bar rather
 than opening a dialog on an empty canvas.
 
+### Video and webcam
+
+**Open** takes a video as readily as a photograph — MP4, MOV, MKV, WebM, anything
+FFmpeg reads. Frame 0 appears at once, a transport strip appears under the canvas,
+and every frame is analysed in the background while the clip already plays: frames
+that are done draw their skeleton, frames that are not draw the picture alone. When
+it finishes, each person has a `track_id`, numbered by how much of the clip they are
+in, so **P1** is whoever is on screen longest and the person chips mean the same
+person on every frame. Passers-by seen for a handful of frames keep their tracks in
+the data but do not get a chip.
+
+`Space` plays and pauses, `←` / `→` step a frame, and the slider *is* the frame
+index. Playback follows the wall clock rather than counting ticks, so a clip plays
+in real time even when a 1080p frame takes longer than a frame's worth of time to
+draw — it skips frames rather than slowing down.
+
+**Smooth** steadies the skeleton between frames with a 1€ filter. It is applied when
+drawing and nowhere else: the stored result, and therefore every JSON and CSV
+export, is exactly what the model said frame by frame. Turning it off is free.
+
+An analysis is cached on disk, keyed on the file's path, size and modification time
+and on the preset, so reopening the same clip is a JSON read, not another pass
+through the models. In video mode the Export menu writes the whole clip — every
+frame, every person, raw — and the PNG is the frame on screen.
+
+**Webcam** turns on live pose from the default camera. Each frame is drawn together
+with its own pose — the frame is held until its result returns — so the skeleton
+never trails the picture; when the model is slower than the camera, the display
+runs at the model's rate instead.
+
+Frame-accurate seeking uses PyAV, the `video` extra (`pip install
+"alchemypose[video]"`). Without it, OpenCV — already a dependency — reads the same
+files and seeks as accurately as the container's index allows, which is exact for
+playing through and approximate for jumping around.
+
+### On an NVIDIA GPU
+
+Video is where speed matters: the analysis runs the models once per frame. ONNX
+Runtime's CUDA build is used automatically when it is installed in place of the
+default one:
+
+```bash
+pip uninstall onnxruntime
+pip install "onnxruntime-gpu[cuda,cudnn]"
+```
+
+Both the detector and the pose model then run on the GPU, each proved by one
+throwaway inference first and demoted to the CPU if that fails. Measured on an RTX
+4070 laptop GPU, Linux: YOLOX-s 12 ms and RTMW-l 14 ms per run, against roughly
+850 ms per frame for the pair on that machine's CPU — a ten-second 1080p dance clip
+(300 frames) analysed on `performance` in 22 s rather than four minutes.
+
 ### One image, from the shell
 
 ```console
@@ -171,7 +227,7 @@ builds a session, about unused initializers and how much of the graph CoreML too
 they are notices, not errors, and stdout carries only the line above.
 
 Without `--json` the result goes to stdout; `--csv` also writes the flat
-`frame,person,keypoint_index,keypoint_name,x,y,score` form. The JSON carries the
+`frame,person,keypoint_index,keypoint_name,x,y,score,track` form (`track` is empty for a still). The JSON carries the
 topology inline, so a result stays readable years later without this package:
 
 ```console
@@ -213,6 +269,24 @@ performance:
   yolox_s                cached
   rtmw_l_384x288         cached
 ```
+
+### A video, from the shell
+
+```console
+$ alchemypose video dance.mp4 --preset performance --json dance.json --csv dance.csv
+Analysing 300/300 frames (14.8 fps)
+300 frames, 7 tracked people, in 21.8 s
+Wrote dance.json
+Wrote dance.csv
+```
+
+The JSON is the same document as for a photograph with more than one frame in it,
+each frame carrying its `frame_index` and `timestamp_s` and each person its
+`track_id`; the CSV's last column is the track. Seven tracks there is one dancer,
+present in all 300 frames as track 0, and six one-to-three-frame detections of people
+in the far background. `--det-interval N` runs the detector every N frames and crops
+the frames between from the previous pose, which is cheaper and fine for a clip with
+one person in it; `--no-cache` forces a fresh analysis.
 
 ### What a score means
 
@@ -275,16 +349,19 @@ All model weights are Apache-2.0, from the MMPose project.
 Layers, with the Qt boundary enforced by a test:
 
 ```
-core/        topology · schema · presets · serialization · H36M mapping
+core/        topology · schema · presets · serialization · H36M mapping ·
+             tracking · smoothing
              no Qt, no onnxruntime — pure data, testable anywhere
 
-media/       reading an image as upright BGR, EXIF applied
+media/       reading an image as upright BGR, EXIF applied · reading a video
+             by frame index (PyAV, or OpenCV), rotation applied
 
 inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache ·
-             the worker thread — no Qt, so it is testable headless
+             the worker thread · the offline video pass and its cache —
+             no Qt, so it is testable headless
 
 gui/         PySide6: canvas · layer tree · preset and person chips ·
-             confidence slider · inspector
+             confidence slider · inspector · transport · video and webcam modes
 ```
 
 `import alchemypose` pulls in no Qt at all — the application class resolves lazily —
@@ -293,9 +370,15 @@ inference worker is plain `threading`; `gui/bridge.py` is the only place it meet
 and it does so by emitting signals, so nothing on a worker thread ever touches a
 widget.
 
-One result structure serves every phase. `PersonPose` carries `track_id` and
-`keypoints_3d` fields that stay empty in 1.0.0, so video and 3D are additive rather
-than a schema migration.
+One result structure serves every phase. `PersonPose` carried `track_id` and
+`keypoints_3d` fields from the first commit; video filled `track_id` without a schema
+change, and 3D will fill the other the same way.
+
+Two policies, on purpose. The worker is latest-request-wins: right for a still and
+for the webcam, where a frame nobody is looking at any more is worth dropping. A clip
+is the opposite — playback beside a 3D skeleton needs every frame — so video has its
+own offline pass that analyses each frame once, in order, and playback then reads the
+result by `frame_index` and never waits on a model.
 
 ---
 
@@ -317,10 +400,15 @@ than a schema migration.
 - [x] Face level of detail
 - [x] Export from the window
 
-**v2 — video.** Upload and scrub, per-frame overlay, tracking, temporal smoothing.
-`PersonPose.track_id` and `PoseFrame.frame_index` have been in the schema since its
-first commit, and the worker is already latest-request-wins, which is what scrubbing
-needs.
+**v2 — video.** Built on `main`, not yet released.
+
+- [x] Video reading by frame index — PyAV (frame-accurate) or OpenCV — rotation applied
+- [x] Offline pass over every frame, cached on disk; play and scrub while it runs
+- [x] `track_id` populated: IoU tracking, renumbered by presence
+- [x] 1€ smoothing at draw time; stored coordinates stay raw
+- [x] Webcam, through the latest-request-wins worker
+- [x] `alchemypose video` on the command line
+- [x] CUDA, when `onnxruntime-gpu` is installed
 
 **v3 — 3D.** RTMW3D emits the same 133-keypoint topology with a third coordinate, so
 the layer panel and presets carry over unchanged; the new work is the viewport.
@@ -339,12 +427,14 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At the time of writing that is 530 tests. On a machine with the weights cached they
+At the time of writing that is 607 tests. On a machine with the weights cached they
 all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
-528 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+605 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
 `tests/integration` — and check the cache rather than downloading anything, and one
 README test compares the stated download size against the cached files, so without
-weights the same Linux run reports 517 passed and 13 skipped. `main.py` sits outside `src/`, so neither
+weights the same Linux run reports 594 passed and 13 skipped. The video tests encode
+their own clips with PyAV (a `dev` dependency) and never touch a file on disk beyond
+`tmp_path`. `main.py` sits outside `src/`, so neither
 `ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
 appears twice above.
 
