@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![PyPI](https://img.shields.io/badge/PyPI-v1.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![PyPI](https://img.shields.io/badge/PyPI-v1.1.0-blue.svg)](https://pypi.org/project/alchemypose/)
 [![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -16,7 +16,7 @@ leg, the face on its own.
 
 ![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](assets/screenshot.png)
 
-> **1.0.0 — single images.** `pip install alchemypose`, type `alchemypose`, and the
+> **1.1.0 — single images.** `pip install alchemypose`, type `alchemypose`, and the
 > window opens. Every person in the photograph you drop in comes back with 133
 > keypoints on a zoomable canvas, driven by a layer tree, preset chips and a
 > confidence slider. The face resolves from contours to individual points as it grows
@@ -47,7 +47,7 @@ alchemypose
 ```
 
 The second line opens the window: `alchemypose` on its own is the application.
-`alchemypose --version` prints `1.0.0`, and the subcommands further down do the same
+`alchemypose --version` prints `1.1.0`, and the subcommands further down do the same
 work with no window at all.
 
 From source instead, if you have access to the repository:
@@ -301,7 +301,7 @@ than a schema migration.
 
 ## Roadmap
 
-**v1 — single image.** Shipped in 1.0.0.
+**v1 — single image.** Shipped in 1.0.0; its leftovers closed in 1.1.0.
 
 - [x] COCO-WholeBody 133 topology, render groups, presets
 - [x] Result schema with reserved video/3D slots

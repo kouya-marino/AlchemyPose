@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet. v2 is video — upload and scrub, per-frame overlay, tracking,
+temporal smoothing.
+
+## [1.1.0] — 2026-11-27
+
 The open items left over from v1, closed before video starts.
 
 ### Added
@@ -479,5 +484,6 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0
