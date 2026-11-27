@@ -328,6 +328,80 @@ def image(
         typer.echo(f"Wrote {csv_out}")
 
 
+@app.command()
+def video(
+    path: Path = typer.Argument(..., help="Video to analyse."),
+    preset: str = typer.Option("performance", help=_PRESET_HELP),
+    json_out: Path | None = typer.Option(None, "--json", help="Write the result here instead of stdout."),
+    csv_out: Path | None = typer.Option(None, "--csv", help="Also write a flat CSV here."),
+    det_interval: int = typer.Option(
+        1, "--det-interval", min=1, help="Run the person detector every N frames; crop the rest from the last pose."
+    ),
+    use_cache: bool = typer.Option(True, "--cache/--no-cache", help="Reuse an earlier analysis of the same file."),
+) -> None:
+    """Run pose estimation on every frame of a video, tracking each person through it."""
+    preset = _checked_preset(preset)
+    if not path.exists():
+        raise _fail(f"{path} not found.")
+    json_out = _checked_output(json_out, "--json")
+    csv_out = _checked_output(csv_out, "--csv")
+
+    import time
+
+    from alchemypose.core.serialize import to_csv, to_json
+    from alchemypose.core.tracking import track_count
+    from alchemypose.inference.rtmw import RTMWEngine
+    from alchemypose.inference.video import cached_analysis
+    from alchemypose.media.video import open_video
+
+    started = time.perf_counter()
+    interactive = _stderr_is_a_terminal()
+    last_report = [0.0]
+
+    def report(_frame: object, done: int, total: int) -> None:
+        now = time.perf_counter()
+        if done != total and now - last_report[0] < (0.2 if interactive else 5.0):
+            return
+        last_report[0] = now
+        rate = done / max(now - started, 1e-6)
+        line = f"Analysing {done}/{total} frames ({rate:.1f} fps)"
+        typer.echo(f"\r{line}" if interactive else line, err=True, nl=not interactive)
+
+    try:
+        reader = open_video(path)
+        try:
+            _fetch_weights(preset)
+            result, was_cached = cached_analysis(
+                path,
+                lambda: RTMWEngine(preset=preset),
+                reader,
+                preset=preset,
+                det_interval=det_interval,
+                use_cache=use_cache,
+                on_frame=report,
+            )
+        finally:
+            reader.close()
+    except AlchemyPoseError as exc:
+        raise _fail(str(exc)) from exc
+    if interactive and not was_cached:
+        typer.echo("", err=True)
+    tracks = track_count(result.frames)
+    how = "from cache" if was_cached else f"in {time.perf_counter() - started:.1f} s"
+    noun = "person" if tracks == 1 else "people"
+    typer.echo(f"{len(result.frames)} frames, {tracks} tracked {noun}, {how}", err=True)
+
+    payload = to_json(result)
+    if json_out is not None:
+        json_out.write_text(payload)
+        typer.echo(f"Wrote {json_out}")
+    else:
+        typer.echo(payload)
+    if csv_out is not None:
+        csv_out.write_text(to_csv(result))
+        typer.echo(f"Wrote {csv_out}")
+
+
 @models_app.command("list")
 def models_list() -> None:
     """Show the presets, their models, and whether they are cached."""

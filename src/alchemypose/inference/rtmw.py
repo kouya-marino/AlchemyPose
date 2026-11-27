@@ -115,11 +115,32 @@ class RTMWEngine:
         """Raw SimCC peak height this engine treats as confidence 1.0 (see ``PEAK_SCALE``)."""
         return self._peak_scale
 
-    def infer(self, image: NDArray[np.uint8], source: str) -> PoseResult:
+    @property
+    def preset(self) -> str:
+        return self._preset
+
+    def detect(self, image: NDArray[np.uint8]) -> list[tuple[tuple[float, float, float, float], float]]:
+        """The detector's people for ``image``: ``(xyxy box, score)`` pairs."""
+        return self._detector.detect(image)
+
+    def infer_frame(
+        self,
+        image: NDArray[np.uint8],
+        frame_index: int = 0,
+        timestamp_s: float | None = None,
+        boxes: list[tuple[tuple[float, float, float, float], float]] | None = None,
+    ) -> PoseFrame:
+        """One frame's people. ``boxes`` skips the detector and crops these instead.
+
+        Video uses ``boxes`` to run the detector only every few frames and crop
+        the frames between from the previous frame's keypoints, which is how
+        rtmlib's ``PoseTracker`` halves the cost of a clip.
+        """
         height, width = image.shape[:2]
         people: list[PersonPose] = []
+        detections = self._detector.detect(image) if boxes is None else boxes
 
-        for bbox, bbox_score in self._detector.detect(image):
+        for bbox, bbox_score in detections:
             warped, affine = top_down_affine(bbox, self._pose_spec.input_size, image)
             blob = normalise_crop(warped)
             simcc_x, simcc_y = self._pose.run(None, {self._pose_input: blob})
@@ -141,9 +162,13 @@ class RTMWEngine:
                 )
             )
 
-        frame = PoseFrame(
-            frame_index=0, timestamp_s=None, image_size=(width, height), people=tuple(people)
+        return PoseFrame(
+            frame_index=frame_index, timestamp_s=timestamp_s, image_size=(width, height), people=tuple(people)
         )
+
+    def infer(self, image: NDArray[np.uint8], source: str) -> PoseResult:
+        height, width = image.shape[:2]
+        frame = self.infer_frame(image)
         return PoseResult(
             topology=COCO_WHOLEBODY_133,
             frames=(frame,),

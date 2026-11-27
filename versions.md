@@ -19,6 +19,48 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 
 ## Shipped
 
+### v2 — video · 2.0.0 · 2026-11-27
+
+**Status: shipped in 2.0.0.** Video opens, analyses in
+the background with a disk cache, plays in real time and scrubs by frame index;
+people are tracked and smoothed at draw time; the webcam runs live; and
+`alchemypose video` does the same headless. One design decision went the other way
+from the plan below: scrubbing does *not* run on the latest-request-wins worker.
+The worker drops frames by design, and playback beside a 3D skeleton and a robot
+needs every one, so a clip gets an offline pass that analyses each frame once and
+playback reads from that. The worker keeps its policy for stills and the webcam,
+where dropping a stale frame is the right call. Measured on Linux with an RTX 4070
+laptop GPU: the 300-frame reference clip analyses in 22 s on `performance`.
+
+**What it is.** Open a video instead of a photograph: a scrubber under the canvas,
+the overlay redrawn per frame, `track_id` populated so a person keeps their
+identity across frames, and temporal smoothing so the skeleton stops shivering.
+Webcam arrives with the same work.
+
+**Why it exists.** A still image proves the model; a video is what makes a pose
+tool useful and what makes it look like anything in a screen recording. It is also
+where the interface question v1 is built around — *what do you show, out of 133
+points per person* — stops being a nicety, because a face-full of dots flickering
+frame to frame is unreadable in a way a still never is.
+
+**Why it is cheap.** The result schema was written for it and has been carrying the
+empty seats since its first commit. `PersonPose.track_id` is already there,
+serialised as `null` on every person in every export v1 has ever written — so
+filling it in changes no schema, no reader and no file format. `PoseFrame` already
+carries `frame_index` and `timestamp_s`, which are 0 and `None` for a still, and
+`PoseResult.frames` is already a tuple that happens to have one element rather than
+a single frame. The worker is already latest-request-wins, which *is* scrub
+semantics: a new frame supersedes any queued frame that has not started. The layer
+tree, the presets, the confidence slider and the export functions all take a
+`PoseResult` and neither know nor care how many frames are in it. Reading frames is
+the one genuinely new dependency — PyAV, for frame-accurate seeking, which is part
+of why the project targets Python 3.12 rather than 3.10.
+
+The per-model peak scale matters more here than it did in v1. Per-image score
+normalisation was rejected partly because it would make a keypoint's confidence
+depend on who else is in the frame, and flicker frame to frame in exactly this
+version.
+
 ### v1.1 — the v1 leftovers · 1.1.0 · 2026-11-27
 
 No new capability: the open items `todo.md` carried out of 1.0.0, closed. Tests
@@ -170,37 +212,6 @@ about a visual tool. Nothing is video and nothing is 3D.
 ---
 
 ## Planned
-
-### v2 — video
-
-**What it is.** Open a video instead of a photograph: a scrubber under the canvas,
-the overlay redrawn per frame, `track_id` populated so a person keeps their
-identity across frames, and temporal smoothing so the skeleton stops shivering.
-Webcam arrives with the same work.
-
-**Why it exists.** A still image proves the model; a video is what makes a pose
-tool useful and what makes it look like anything in a screen recording. It is also
-where the interface question v1 is built around — *what do you show, out of 133
-points per person* — stops being a nicety, because a face-full of dots flickering
-frame to frame is unreadable in a way a still never is.
-
-**Why it is cheap.** The result schema was written for it and has been carrying the
-empty seats since its first commit. `PersonPose.track_id` is already there,
-serialised as `null` on every person in every export v1 has ever written — so
-filling it in changes no schema, no reader and no file format. `PoseFrame` already
-carries `frame_index` and `timestamp_s`, which are 0 and `None` for a still, and
-`PoseResult.frames` is already a tuple that happens to have one element rather than
-a single frame. The worker is already latest-request-wins, which *is* scrub
-semantics: a new frame supersedes any queued frame that has not started. The layer
-tree, the presets, the confidence slider and the export functions all take a
-`PoseResult` and neither know nor care how many frames are in it. Reading frames is
-the one genuinely new dependency — PyAV, for frame-accurate seeking, which is part
-of why the project targets Python 3.12 rather than 3.10.
-
-The per-model peak scale matters more here than it did in v1. Per-image score
-normalisation was rejected partly because it would make a keypoint's confidence
-depend on who else is in the frame, and flicker frame to frame in exactly this
-version.
 
 ### v3 — 3D
 

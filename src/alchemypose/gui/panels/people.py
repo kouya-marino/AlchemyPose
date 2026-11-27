@@ -34,6 +34,10 @@ class PersonBar(QWidget):
                 return index
         return None
 
+    @property
+    def count(self) -> int:
+        return len(self.chips)
+
     def set_people(self, count: int) -> None:
         """Rebuild the chips. Cheap enough that diffing is not worth it."""
         for chip in self.chips:

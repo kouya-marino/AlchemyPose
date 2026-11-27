@@ -570,3 +570,58 @@ def test_image_reports_a_failed_download_as_a_sentence(
     assert "Error: could not download" in result.output
     assert "Downloading yolox_nano (213.4 MB)" in result.stderr
     assert not stub_inference, "the engine must not be built once the weights are known to be missing"
+
+
+# ------------------------------------------------------------------------ video
+
+
+@pytest.fixture
+def _video_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A fake engine and reader, a private cache, and weights that are already 'fetched'."""
+    from alchemypose import cli as cli_module
+    from alchemypose.inference import rtmw
+    from alchemypose.media import video as video_module
+    from tests.support.fakes import FakeFrameEngine, FakeReader
+
+    monkeypatch.setenv("ALCHEMYPOSE_MODEL_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(cli_module, "_fetch_weights", lambda preset: None)
+    built: list[str] = []
+
+    def engine(preset: str = "performance") -> FakeFrameEngine:
+        built.append(preset)
+        return FakeFrameEngine()
+
+    monkeypatch.setattr(rtmw, "RTMWEngine", engine)
+    monkeypatch.setattr(video_module, "open_video", lambda path, backend=None: FakeReader(frames=6, path=str(path)))
+    clip = tmp_path / "dance.mp4"
+    clip.write_bytes(b"stand-in")
+    return clip, built
+
+
+def test_video_writes_every_frame_with_track_ids(_video_stubs, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    from alchemypose.core.serialize import from_json
+
+    clip, built = _video_stubs
+    out = tmp_path / "out.json"
+    result = runner.invoke(app, ["video", str(clip), "--preset", "lite", "--json", str(out)])
+    assert result.exit_code == 0, result.output
+    assert built == ["lite"]
+    parsed = from_json(out.read_text())
+    assert [f.frame_index for f in parsed.frames] == list(range(6))
+    assert {p.track_id for f in parsed.frames for p in f.people} == {0}
+    assert "6 frames, 1 tracked person" in result.stderr
+
+
+def test_video_a_second_run_comes_from_the_cache(_video_stubs, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    clip, built = _video_stubs
+    runner.invoke(app, ["video", str(clip), "--preset", "lite", "--json", str(tmp_path / "a.json")])
+    second = runner.invoke(app, ["video", str(clip), "--preset", "lite", "--json", str(tmp_path / "b.json")])
+    assert second.exit_code == 0
+    assert built == ["lite"], "no engine is built for a cached clip"
+    assert "from cache" in second.stderr
+
+
+def test_video_reports_a_missing_file_without_a_traceback(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["video", str(tmp_path / "missing.mp4")])
+    assert result.exit_code == 1
+    assert "not found" in result.output

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
@@ -33,6 +33,7 @@ from alchemypose.inference.engine import PoseEngine
 
 if TYPE_CHECKING:
     from alchemypose.gui.export import SavePrompt
+    from alchemypose.inference.video import FrameEngine
 
 #: The preset the window runs. Named once, because the factory below has to
 #: fetch exactly the models the engine is about to ask for.
@@ -42,6 +43,11 @@ WINDOW_TITLE = "AlchemyPose"
 WINDOW_GEOMETRY = (1440, 900)
 DEFAULT_CONFIDENCE_THRESHOLD = 0.3
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+VIDEO_FILTER = "Videos (*.mp4 *.mov *.m4v *.avi *.mkv *.webm)"
+MEDIA_FILTER = (
+    "Images and videos (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.mp4 *.mov *.m4v *.avi *.mkv *.webm);;"
+    f"{IMAGE_FILTER};;{VIDEO_FILTER}"
+)
 
 #: The Export menu, in order: label, file suffix, and the save dialog's filter.
 EXPORT_KINDS: tuple[tuple[str, str, str], ...] = (
@@ -160,6 +166,7 @@ class MainWindow(QMainWindow):
         reporter: Reporter | None = None,
         engine_factory: Callable[[], PoseEngine] | None = None,
         save_prompt: SavePrompt | None = None,
+        video_engine_factory: Callable[[], FrameEngine] | None = None,
     ) -> None:
         super().__init__()
         self.reporter: Reporter = reporter or DialogReporter()
@@ -175,6 +182,8 @@ class MainWindow(QMainWindow):
         from alchemypose.gui.panels.inspector import Inspector, LegendWidget
         from alchemypose.gui.panels.layers import LayerPanel
         from alchemypose.gui.panels.presets import PresetBar
+        from alchemypose.gui.panels.transport import TransportBar
+        from alchemypose.gui.video import VideoController
 
         self._result: PoseResult | None = None
         self._pending_source: str | None = None
@@ -199,8 +208,19 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.legend)
         side.setFixedWidth(280)
 
+        # Video mode adds a transport strip under the canvas; it is hidden for stills.
+        self.transport = TransportBar()
+        self.transport.hide()
+        stage = QWidget()
+        stage_layout = QVBoxLayout(stage)
+        stage_layout.setContentsMargins(0, 0, 0, 0)
+        stage_layout.setSpacing(0)
+        stage_layout.addWidget(self.canvas, stretch=1)
+        stage_layout.addWidget(self.transport)
+        self.stage_layout = stage_layout
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.canvas)
+        splitter.addWidget(stage)
         splitter.addWidget(side)
         splitter.setStretchFactor(0, 1)
 
@@ -244,6 +264,32 @@ class MainWindow(QMainWindow):
         self._bridge.failed.connect(self._on_failed)
         self._bridge.start()
 
+        # Video: its own engine, built lazily on the analysis thread. The cast
+        # is honest — the fetching factory builds an RTMWEngine, which has
+        # ``infer_frame`` — but the image worker's protocol does not promise it.
+        default_video_factory = cast(
+            "Callable[[], FrameEngine]", _fetching_engine_factory(self.weights_progress.emit)
+        )
+        self.video = VideoController(video_engine_factory or default_video_factory, DEFAULT_PRESET, parent=self)
+        self._video_first_frame = False
+        self.video.frame_ready.connect(self._on_video_frame)
+        self.video.analysis_progress.connect(self._on_video_progress)
+        self.video.analysis_finished.connect(self._on_video_analysed)
+        self.video.analysis_failed.connect(self._on_video_failed)
+        self.video.playing_changed.connect(self.transport.set_playing)
+        self.transport.position_changed.connect(self.video.show)
+        self.transport.play_toggled.connect(self._on_play_toggled)
+        self.transport.smoothing_toggled.connect(self.video.set_smoothing)
+        from alchemypose.gui.live import LiveController
+
+        self.live = LiveController(self._bridge.submit, parent=self)
+        self._live_first_frame = False
+        self.live.frame_ready.connect(self._on_live_frame)
+        self.live.failed.connect(self._on_live_failed)
+        QShortcut(QKeySequence("Space"), self, self._toggle_play)
+        QShortcut(QKeySequence("Right"), self, lambda: self._step(1))
+        QShortcut(QKeySequence("Left"), self, lambda: self._step(-1))
+
     # ---------------------------------------------------------------- toolbar
 
     def _build_toolbar(self) -> None:
@@ -256,9 +302,15 @@ class MainWindow(QMainWindow):
 
         self.open_action = QAction("Open", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
-        self.open_action.setToolTip("Open an image (Ctrl+O)")
+        self.open_action.setToolTip("Open an image or a video (Ctrl+O)")
         self.open_action.triggered.connect(self._choose_file)
         toolbar.addAction(self.open_action)
+
+        self.webcam_action = QAction("Webcam", self)
+        self.webcam_action.setCheckable(True)
+        self.webcam_action.setToolTip("Live pose from the default camera")
+        self.webcam_action.toggled.connect(self._on_webcam_toggled)
+        toolbar.addAction(self.webcam_action)
         toolbar.addSeparator()
 
         self.people = PersonBar()
@@ -341,7 +393,9 @@ class MainWindow(QMainWindow):
                 return None
             return lambda path: export_png(self.canvas, path)
 
-        result = self._result
+        # In video mode the data exports are the whole clip, raw — not the one
+        # smoothed frame on screen. Until the analysis finishes there is none.
+        result = self.video.result if self.video.is_open else self._result
         if result is None:
             return None
         if suffix == "json":
@@ -365,14 +419,90 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ open / infer
 
     def _choose_file(self) -> None:
-        name, _ = QFileDialog.getOpenFileName(self, "Open image", "", IMAGE_FILTER)
+        name, _ = QFileDialog.getOpenFileName(self, "Open image or video", "", MEDIA_FILTER)
         if name:
-            self.open_image(Path(name))
+            self.open_path(Path(name))
+
+    def open_path(self, path: Path) -> None:
+        """Open a photograph or a video, by what the file is called."""
+        from alchemypose.media.video import is_video_path
+
+        if is_video_path(path):
+            self.open_video(path)
+        else:
+            self.open_image(path)
+
+    def _leave_video(self) -> None:
+        if self.video.is_open:
+            self.video.close()
+        self.transport.hide()
+        self._leave_live()
+
+    def _leave_live(self) -> None:
+        if self.live.active:
+            self.live.stop()
+        if self.webcam_action.isChecked():
+            self.webcam_action.blockSignals(True)
+            self.webcam_action.setChecked(False)
+            self.webcam_action.blockSignals(False)
+
+    # ---------------------------------------------------------------- webcam
+
+    def _on_webcam_toggled(self, on: bool) -> None:
+        if not on:
+            self.live.stop()
+            self.set_status("Webcam off.")
+            return
+        if self.video.is_open:
+            self.video.close()
+        self.transport.hide()
+        self._result = None
+        self._person = None
+        self._pending_source = None
+        self.people.set_people(0)
+        self.inspector.clear()
+        self.selection.clear()
+        self._live_first_frame = True
+        try:
+            self.live.start(0)
+        except Exception as exc:  # noqa: BLE001 - no camera is a sentence, not a crash
+            self._leave_live()
+            self.reporter.error("Webcam unavailable", str(exc))
+            self.set_status("No webcam.")
+            return
+        self.set_status("Webcam — waiting for the first pose ...")
+
+    def _on_live_frame(self, bgr: object, view: object) -> None:
+        import numpy as np
+
+        if not isinstance(view, PoseResult):
+            return
+        image = np.asarray(bgr, dtype=np.uint8)
+        if self._live_first_frame:
+            self._live_first_frame = False
+            self.canvas.set_image(image)
+            self.canvas.fit_to_window()
+        else:
+            self.canvas.replace_image(image)
+        count = len(view.frames[0].people)
+        if count != self.people.count:
+            self.people.set_people(count)
+            self._person = None
+        self._result = view
+        self.canvas_overlay.set_result(view, self._effective_selection(), self._confidence_threshold)
+        noun = "person" if count == 1 else "people"
+        self.set_status(f"Webcam · {count} {noun} · {view.model}")
+
+    def _on_live_failed(self, message: str) -> None:
+        self._leave_live()
+        self.reporter.error("Webcam stopped", message)
+        self.set_status("Webcam stopped.")
 
     def open_image(self, path: Path) -> None:
         """Show the image immediately, then detect in the background."""
         from alchemypose.media.image import load_image
 
+        self._leave_video()
         try:
             image = load_image(path)
         except AlchemyPoseError as exc:
@@ -392,8 +522,96 @@ class MainWindow(QMainWindow):
         self.set_status(f"{path.name} — detecting ...")
         self._bridge.submit(image, str(path))
 
+    # ------------------------------------------------------------------ video
+
+    def open_video(self, path: Path) -> None:
+        """Show frame 0 at once, analyse every frame in the background, play meanwhile."""
+        self._leave_live()
+        self._result = None
+        self._person = None
+        self._pending_source = str(path)
+        self.people.set_people(0)
+        self.inspector.clear()
+        self.selection.clear()
+        self._video_first_frame = True
+        # Shown before the first frame arrives, so that frame is fitted to the
+        # canvas that is left once the strip has taken its height.
+        self.transport.show()
+        try:
+            info = self.video.open(path)
+        except AlchemyPoseError as exc:
+            self._video_first_frame = False
+            self.transport.hide()
+            self.reporter.error("Could not open video", str(exc))
+            self.set_status("Could not open that file.")
+            return
+        self.transport.configure(info.frame_count, info.fps)
+        self.transport.set_analysis_progress(0, info.frame_count)
+        self.transport.show()
+        self.set_status(
+            f"{path.name} — {info.width}×{info.height}, {info.fps:g} fps, {info.frame_count} frames · analysing ..."
+        )
+
+    def _on_video_frame(self, index: int, bgr: object, view: object) -> None:
+        import numpy as np
+
+        image = np.asarray(bgr, dtype=np.uint8)
+        if self._video_first_frame:
+            self._video_first_frame = False
+            self.canvas.set_image(image)
+            self.canvas.fit_to_window()
+        else:
+            self.canvas.replace_image(image)
+        self.transport.show_position(index)
+        if isinstance(view, PoseResult):
+            self._result = view
+            self.canvas_overlay.set_result(view, self._effective_selection(), self._confidence_threshold)
+        else:
+            self._result = None
+            self.canvas_overlay.set_result(
+                _empty_result(image.shape[1], image.shape[0], self._pending_source or ""),
+                self._effective_selection(),
+                self._confidence_threshold,
+            )
+
+    def _on_video_progress(self, done: int, total: int) -> None:
+        self.transport.set_analysis_progress(done, total)
+        if self.video.analysing:
+            self.set_status(f"Analysing {done}/{total} frames ...")
+
+    def _on_video_analysed(self, result: PoseResult, cached: bool) -> None:
+        tracks = self.video.track_count
+        self.people.set_people(tracks)
+        noun = "person" if tracks == 1 else "people"
+        how = " (from cache)" if cached else ""
+        self.set_status(f"{len(result.frames)} frames · {tracks} {noun} tracked · {result.model}{how}")
+
+    def _on_video_failed(self, message: str) -> None:
+        self.reporter.error("Video analysis failed", message)
+        self.set_status("Video analysis failed.")
+
+    def _on_play_toggled(self, playing: bool) -> None:
+        if playing:
+            self.video.play()
+        else:
+            self.video.pause()
+
+    def _toggle_play(self) -> None:
+        if self.video.is_open:
+            self._on_play_toggled(not self.video.playing)
+
+    def _step(self, delta: int) -> None:
+        if self.video.is_open:
+            self.video.pause()
+            self.video.show(self.video.index + delta)
+
     def _on_result(self, result: PoseResult) -> None:
         """Runs on the GUI thread, via the bridge's queued connection."""
+        if self.live.owns(result.source):
+            self.live.on_result(result)
+            return
+        if self.video.is_open or self.live.active:
+            return  # a still's straggler arriving after a video or the webcam took over
         if self._pending_source is not None and result.source != self._pending_source:
             return  # a straggler for an image we have since replaced
         if not result.frames:
@@ -531,5 +749,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop the worker before the widgets it would report to disappear."""
+        self.live.stop()
         self._bridge.stop()
+        self.video.close()
         super().closeEvent(event)
+
+
+def _empty_result(width: int, height: int, source: str) -> PoseResult:
+    """Nobody, on a frame of this size: what a not-yet-analysed video frame draws."""
+    from alchemypose.core.schema import PoseFrame
+    from alchemypose.core.topology import COCO_WHOLEBODY_133
+
+    frame = PoseFrame(frame_index=0, timestamp_s=None, image_size=(width, height), people=())
+    return PoseResult(topology=COCO_WHOLEBODY_133, frames=(frame,), source=source, model="")

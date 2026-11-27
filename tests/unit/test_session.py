@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from alchemypose.inference import session as session_module
-from alchemypose.inference.session import COREML, CPU, chosen_providers, make_session, probe_inputs
+from alchemypose.inference.session import COREML, CPU, CUDA, chosen_providers, make_session, probe_inputs
 
 
 class _FakeInput:
@@ -219,3 +219,43 @@ def test_make_session_demotes_the_real_yolox_graph_to_cpu() -> None:
         pytest.skip("yolox_nano not cached; run `alchemypose models fetch --preset lite`")
 
     assert make_session(path, prefer_coreml=True).get_providers() == [CPU]
+
+
+# ------------------------------------------------------------------------ CUDA
+
+
+def test_cuda_is_requested_first_when_the_gpu_build_offers_it() -> None:
+    assert chosen_providers(False, [CUDA, CPU], prefer_cuda=True) == [CUDA, CPU]
+    assert chosen_providers(True, [CUDA, CPU], prefer_cuda=True) == [CUDA, CPU]
+
+
+def test_cuda_is_not_used_unless_asked_for() -> None:
+    assert chosen_providers(False, [CUDA, CPU]) == [CPU]
+
+
+def test_the_detector_path_takes_cuda_though_it_refuses_coreml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``prefer_coreml=False`` is about CoreML's YOLOX failure; CUDA runs that graph fine."""
+    cuda = _FakeSession([CUDA, CPU])
+    calls = _install(monkeypatch, {CUDA: cuda, CPU: _FakeSession([CPU])}, available=[CUDA, CPU])
+    monkeypatch.setattr(session_module.ort, "preload_dlls", lambda: None, raising=False)
+
+    assert make_session(Path("yolox.onnx"), prefer_coreml=False) is cuda
+    assert calls == [[CUDA, CPU]]
+    assert len(cuda.runs) == 1, "a CUDA session is proved by a run, like a CoreML one"
+
+
+def test_a_cuda_session_that_cannot_run_is_demoted_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    cuda = _FakeSession([CUDA, CPU], run_error=RuntimeError("cudnn not found"))
+    cpu = _FakeSession([CPU])
+    calls = _install(monkeypatch, {CUDA: cuda, CPU: cpu}, available=[CUDA, CPU])
+    monkeypatch.setattr(session_module.ort, "preload_dlls", lambda: None, raising=False)
+
+    assert make_session(Path("pose.onnx"), prefer_coreml=True) is cpu
+    assert calls == [[CUDA, CPU], [CPU]]
+
+
+def test_prefer_cuda_false_pins_cpu_even_on_the_gpu_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    cpu = _FakeSession([CPU])
+    calls = _install(monkeypatch, {CPU: cpu}, available=[CUDA, CPU])
+    assert make_session(Path("x.onnx"), prefer_coreml=False, prefer_cuda=False) is cpu
+    assert calls == [[CPU]]

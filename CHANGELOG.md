@@ -7,8 +7,43 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet. v2 is video — upload and scrub, per-frame overlay, tracking,
-temporal smoothing.
+Nothing yet. v3 is 3D — RTMW3D, `keypoints_3d`, and an orbitable view.
+
+## [2.0.0] — 2026-11-27
+
+v2 — video and webcam. A major version because the CSV gained a column and the
+result now carries tracked, multi-frame data; nothing a 1.x reader indexed moved.
+
+### Added
+
+- **Video.** Open a clip instead of a photograph: frame 0 appears at once and every
+  frame is analysed in the background (`inference.video.analyse_video`) while it
+  already plays and scrubs. A transport strip under the canvas plays, pauses and
+  scrubs by frame index; `Space`, `←` and `→` do the same from the keyboard.
+  Playback follows the wall clock, skipping rather than slowing when a frame takes
+  too long to draw.
+- **`track_id` is populated.** Greedy IoU tracking over the keypoints' own extent
+  (`core.tracking`), renumbered at the end so track 0 is whoever is in the most
+  frames. In video mode index `i` is track `i` on every frame, so person chips mean
+  the same person throughout; tracks seen in under 5% of the clip keep their data
+  but get no chip.
+- **Temporal smoothing at draw time** (`core.smoothing`, the 1€ filter), behind a
+  Smooth toggle. Stored results and exports stay raw.
+- **Analyses are cached** on disk, keyed on the file's path, size, modification
+  time, preset and detector interval, so reopening a clip skips the models.
+- **Webcam**, through the latest-request-wins worker, each frame drawn with its own
+  pose.
+- **`alchemypose video`**, with `--det-interval` and `--cache/--no-cache`.
+- **CUDA.** With `onnxruntime-gpu` installed in place of `onnxruntime`, the detector
+  and the pose model run on the GPU, proved by a run on zeros like CoreML sessions.
+- **The `video` extra** (PyAV) for frame-accurate seeking; OpenCV is the fallback.
+
+### Changed
+
+- **The CSV gains a `track` column**, last, so every v1 column keeps its position.
+- **Converting a frame for display is about 8× faster** (`Format_BGR888` instead of
+  reversing channels in numpy: 23 ms → 3 ms on a 1080×1920 frame), which is what
+  lets 1080p playback keep up.
 
 ## [1.1.0] — 2026-11-27
 
@@ -484,6 +519,7 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0

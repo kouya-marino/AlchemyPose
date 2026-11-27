@@ -40,6 +40,15 @@ fails: it costs a CoreML session that then gets thrown away, 1.8 s for
 file on CPU. Paying seconds at every launch to re-learn a known answer is not
 worth it. The probe earns its keep on the pose models, where CoreML does work
 today and a future export or onnxruntime release could quietly stop working.
+
+**CUDA**, when the ``onnxruntime-gpu`` build is installed in place of
+``onnxruntime``, is preferred over everything else — for the detector too,
+which CUDA runs without complaint. Measured on an RTX 4070 laptop GPU: YOLOX-s
+12 ms and RTMW-l 14 ms per run, against roughly 850 ms for the pair on that
+machine's CPU provider, which is the difference between analysing a 10-second
+clip in seconds and in minutes. A CUDA session goes through the same
+run-on-zeros probe as CoreML: a missing cuDNN or a driver mismatch is exactly
+the kind of failure that only shows when the graph runs.
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ from numpy.typing import NDArray
 
 CPU = "CPUExecutionProvider"
 COREML = "CoreMLExecutionProvider"
+CUDA = "CUDAExecutionProvider"
 
 _log = logging.getLogger(__name__)
 
@@ -72,11 +82,40 @@ _PROBE_DTYPES: dict[str, type[np.generic]] = {
 }
 
 
-def chosen_providers(prefer_coreml: bool, available: Sequence[str]) -> list[str]:
-    """The provider list to hand onnxruntime. CPU is always last, as the fallback."""
+def chosen_providers(prefer_coreml: bool, available: Sequence[str], prefer_cuda: bool = False) -> list[str]:
+    """The provider list to hand onnxruntime. CPU is always last, as the fallback.
+
+    CUDA wins over CoreML when both are asked for; no platform has both.
+    """
+    if prefer_cuda and CUDA in available:
+        return [CUDA, CPU]
     if prefer_coreml and COREML in available:
         return [COREML, CPU]
     return [CPU]
+
+
+_dlls_preloaded = False
+
+
+def _preload_cuda_libraries() -> None:
+    """Let onnxruntime find CUDA and cuDNN from the ``nvidia-*`` pip wheels.
+
+    ``onnxruntime-gpu[cuda,cudnn]`` installs those libraries as wheels rather
+    than system packages, and ``preload_dlls`` is how onnxruntime is told to
+    look there. Absent on older releases, and harmless when the libraries are
+    system-wide anyway.
+    """
+    global _dlls_preloaded
+    if _dlls_preloaded:
+        return
+    _dlls_preloaded = True
+    preload = getattr(ort, "preload_dlls", None)
+    if preload is None:
+        return
+    try:
+        preload()
+    except Exception as exc:  # noqa: BLE001 - the probe will demote the session if CUDA truly fails
+        _log.debug("onnxruntime.preload_dlls failed: %s", exc)
 
 
 def probe_inputs(session: ort.InferenceSession) -> dict[str, NDArray[Any]] | None:
@@ -129,7 +168,7 @@ def _executes(session: ort.InferenceSession, name: str) -> bool:
     return True
 
 
-def make_session(path: Path, *, prefer_coreml: bool) -> ort.InferenceSession:
+def make_session(path: Path, *, prefer_coreml: bool, prefer_cuda: bool = True) -> ort.InferenceSession:
     """Open a session, degrading to CPU if CoreML cannot create *or run* the graph.
 
     The run half matters more than the create half: the one provider failure
@@ -148,14 +187,16 @@ def make_session(path: Path, *, prefer_coreml: bool) -> ort.InferenceSession:
     provider option that persists compiled models between sessions; nothing
     here passes it, and what it would buy has not been measured.
     """
-    providers = chosen_providers(prefer_coreml, ort.get_available_providers())
+    providers = chosen_providers(prefer_coreml, ort.get_available_providers(), prefer_cuda=prefer_cuda)
     if providers == [CPU]:
         return ort.InferenceSession(str(path), providers=[CPU])
+    if providers[0] == CUDA:
+        _preload_cuda_libraries()
 
     try:
         session = ort.InferenceSession(str(path), providers=providers)
     except Exception as exc:  # noqa: BLE001 - any provider failure must degrade, not crash
-        _log.warning("CoreML session for %s could not be created (%s); falling back to CPU", path.name, exc)
+        _log.warning("%s session for %s could not be created (%s); falling back to CPU", providers[0], path.name, exc)
     else:
         if _executes(session, path.name):
             return session
