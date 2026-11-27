@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![PyPI](https://img.shields.io/badge/PyPI-v1.1.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![PyPI](https://img.shields.io/badge/PyPI-v2.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
 [![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -16,17 +16,16 @@ leg, the face on its own.
 
 ![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](assets/screenshot.png)
 
-> **1.1.0 — single images.** `pip install alchemypose`, type `alchemypose`, and the
-> window opens. Every person in the photograph you drop in comes back with 133
-> keypoints on a zoomable canvas, driven by a layer tree, preset chips and a
-> confidence slider. The face resolves from contours to individual points as it grows
-> on screen, and the Export menu writes the keypoints as JSON or CSV and the overlay
-> as a PNG. The CLI produces the same result with no window at all.
->
-> **Unreleased on `main`: video and webcam.** Open a clip instead of a photograph and
-> every frame is analysed once in the background, each person tracked through it,
-> while it already plays and scrubs; or switch on the webcam for live pose. See
-> [Video and webcam](#video-and-webcam). 3D is next — see [Roadmap](#roadmap).
+> **2.0.0 — photographs, video and webcam.** `pip install alchemypose`, type
+> `alchemypose`, and the window opens. Every person in the photograph you drop in
+> comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
+> chips and a confidence slider. The face resolves from contours to individual points
+> as it grows on screen, and the Export menu writes the keypoints as JSON or CSV and
+> the overlay as a PNG. Open a clip instead and every frame is analysed once in the
+> background, each person tracked through it, while it already plays and scrubs; or
+> switch on the webcam for live pose — see [Video and webcam](#video-and-webcam). The
+> CLI produces the same results with no window at all. 3D is next — see
+> [Roadmap](#roadmap).
 
 ---
 
@@ -51,7 +50,7 @@ alchemypose
 ```
 
 The second line opens the window: `alchemypose` on its own is the application.
-`alchemypose --version` prints `1.1.0`, and the subcommands further down do the same
+`alchemypose --version` prints `2.0.0`, and the subcommands further down do the same
 work with no window at all.
 
 From source instead, if you have access to the repository:
@@ -400,7 +399,7 @@ result by `frame_index` and never waits on a model.
 - [x] Face level of detail
 - [x] Export from the window
 
-**v2 — video.** Built on `main`, not yet released.
+**v2 — video.** Shipped in 2.0.0.
 
 - [x] Video reading by frame index — PyAV (frame-accurate) or OpenCV — rotation applied
 - [x] Offline pass over every frame, cached on disk; play and scrub while it runs

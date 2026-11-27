@@ -7,7 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-v2 — video and webcam.
+Nothing yet. v3 is 3D — RTMW3D, `keypoints_3d`, and an orbitable view.
+
+## [2.0.0] — 2026-11-27
+
+v2 — video and webcam. A major version because the CSV gained a column and the
+result now carries tracked, multi-frame data; nothing a 1.x reader indexed moved.
 
 ### Added
 
@@ -514,6 +519,7 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0
