@@ -68,8 +68,26 @@ def test_json_round_trip_preserves_empty_3d_slots() -> None:
 def test_csv_has_one_row_per_keypoint_per_person_plus_a_header() -> None:
     text = to_csv(_result(n_people=2))
     lines = text.strip().splitlines()
-    assert lines[0] == "frame,person,keypoint_index,keypoint_name,x,y,score"
+    assert lines[0] == "frame,person,keypoint_index,keypoint_name,x,y,score,track"
     assert len(lines) == 1 + 2 * 133
+
+
+def test_csv_keeps_every_v1_column_in_place_and_adds_track_last() -> None:
+    """A v1 reader indexed columns 0-6; they must not move."""
+    header = to_csv(_result(n_people=1)).splitlines()[0].split(",")
+    assert header[:7] == ["frame", "person", "keypoint_index", "keypoint_name", "x", "y", "score"]
+    assert header[7] == "track"
+
+
+def test_csv_track_is_empty_for_an_untracked_person_and_the_id_for_a_tracked_one() -> None:
+    from dataclasses import replace
+
+    result = _result(n_people=2)
+    frame = result.frames[0]
+    tracked = replace(frame, people=(replace(frame.people[0], track_id=4), frame.people[1]))
+    rows = to_csv(replace(result, frames=(tracked,))).strip().splitlines()[1:]
+    assert rows[0].split(",")[7] == "4"
+    assert rows[133].split(",")[7] == ""
 
 
 def test_csv_names_come_from_the_topology() -> None:

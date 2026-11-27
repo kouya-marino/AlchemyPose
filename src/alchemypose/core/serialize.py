@@ -160,14 +160,19 @@ def from_json(text: str) -> PoseResult:
 
 def to_csv(result: PoseResult) -> str:
     buf = io.StringIO()
-    buf.write("frame,person,keypoint_index,keypoint_name,x,y,score\n")
+    """One row per keypoint. ``track`` is empty for a still image, whose people are untracked.
+
+    ``track`` is the last column so every column a v1 reader indexed keeps its position.
+    """
+    buf.write("frame,person,keypoint_index,keypoint_name,x,y,score,track\n")
     names = result.topology.keypoint_names
     for frame in result.frames:
         for person_index, person in enumerate(frame.people):
+            track = "" if person.track_id is None else str(person.track_id)
             for i in range(len(person)):
                 x, y = person.keypoints[i]
                 buf.write(
                     f"{frame.frame_index},{person_index},{i},{names[i]},"
-                    f"{x:.3f},{y:.3f},{person.scores[i]:.4f}\n"
+                    f"{x:.3f},{y:.3f},{person.scores[i]:.4f},{track}\n"
                 )
     return buf.getvalue()
