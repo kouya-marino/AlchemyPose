@@ -7,7 +7,43 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet. v4.1 is a robot-motion export to train a G1 policy from.
+Nothing yet.
+
+## [4.1.0] — 2026-11-27
+
+v4.1 — reference motion to train a G1 policy from, and a corrected retarget.
+
+### Added
+
+- **`alchemypose retarget`**: video → `3d` analysis → G1 retarget → reference
+  motion, as a named-array `.npz` and as Unitree's 36-column CSV (quaternion
+  xyzw, URDF joint order), with BeyondMimic's conversion command printed beside
+  it. The Export menu writes the same from the G1 on screen.
+- **`robot.export`**: trimming to the frames the person is in, interior gaps
+  interpolated and flagged; root height on the floor, heading-only orientation,
+  and `fixed` or `planted` travel, each labelled as an estimate; slow-down to a
+  speed budget; velocities from the final trajectory; foot contacts; a metadata
+  record of everything that made the file. Both quaternion orders were checked
+  against Unitree's own published data through their MuJoCo model.
+- **`robot.simcheck`** and the `sim` extra (MuJoCo): plays a reference through
+  Unitree's MJCF kinematically and reports FK agreement, the lowest point,
+  self-contacts and range violations (`--check`).
+
+### Fixed
+
+- **A neutral human no longer comes out knock-kneed.** Limbs started at the hip
+  and shoulder joints, but the G1's rest thighs and upper arms slant outwards, so
+  a straight human limb pulled the robot's inwards: ankles 0.11 m apart against
+  0.24 m at rest, ankle roll pinned at its limit. Limbs now start from points
+  above the rest knee and elbow. On the reference clip, ankle-roll pinning fell
+  from 85% of frames to 17–38%; the 4.0.0 README blamed the dancer's stance,
+  which was wrong, and is corrected.
+- **A hand or foot target moves only its own joints.** A hand the regularised
+  wrists cannot point dragged the whole arm instead — 13° of forearm error on a
+  pose the robot can make.
+- **The floor height uses all four sole corners.** With the ankle rolled, the
+  sole's edge dips below its centreline; MuJoCo put a centreline estimate 4.3 cm
+  under the floor.
 
 ## [4.0.0] — 2026-11-27
 
@@ -573,7 +609,8 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...v2.0.0

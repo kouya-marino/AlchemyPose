@@ -19,6 +19,18 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 
 ## Shipped
 
+### v4.1 — reference motion to train from · 4.1.0 · 2026-11-27
+
+`alchemypose retarget` writes a clip as G1 reference motion — a named `.npz` and
+Unitree's CSV — with the root estimated and labelled as such, slowed to the motors'
+budget, and checked kinematically through Unitree's own MuJoCo model. The file
+formats were read off Unitree's published data and confirmed by playing that data
+through their MJCF, not written from memory.
+
+It also corrects 4.0.0's retarget, found by a test the round trip could not run: a
+neutral human. The robot's outward-slanting rest limbs made it knock-kneed, which is
+what had pinned its ankles — not the dancer's stance, as 4.0.0's README said.
+
 ### v4 — the Unitree G1 · 4.0.0 · 2026-11-27
 
 **Status: shipped in 4.0.0.** The same motion on Unitree's 29-joint G1, beside the
@@ -274,12 +286,7 @@ about a visual tool. Nothing is video and nothing is 3D.
 
 ## Planned
 
-### v4.1 — a robot-motion export
-
-Root pose, the 29 joint angles, velocities and foot contacts, keyed by joint name,
-in a layout MuJoCo and Isaac Lab trainers load, with a MuJoCo kinematic playback
-check — the file a policy is trained from. Root travel and ground contact are
-estimates from one camera, and labelled as such.
+Nothing is planned beyond 4.1. The open questions in `todo.md` are the candidates.
 
 ## Decisions that shaped v1
 

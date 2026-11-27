@@ -90,6 +90,15 @@ G1_POINTS: dict[str, tuple[str, tuple[float, float, float]]] = {
     "l_hand": ("left_rubber_hand", (0.10, 0.0, 0.01)),
     "r_hand": ("right_rubber_hand", (0.10, 0.0, 0.01)),
 }
+#: The four corners of each sole, in the ankle-roll frame, from the foot mesh's
+#: bounds. The floor height uses all four: with the ankle rolled, an edge of the
+#: 7.6 cm-wide sole dips below the centreline, and MuJoCo put a centreline-only
+#: estimate 4.3 cm under the floor.
+SOLE_CORNERS: tuple[tuple[float, float, float], ...] = (
+    (0.142, 0.038, -0.035), (0.142, -0.038, -0.035), (-0.066, 0.038, -0.035), (-0.066, -0.038, -0.035),
+)
+_SOLE_LINKS = ("left_ankle_roll_link", "right_ankle_roll_link")
+
 #: Hip joint frames: where the robot's legs start.
 _HIPS = {"l": "left_hip_pitch_link", "r": "right_hip_pitch_link"}
 #: The pivot the torso turns about (the waist joints sit at the pelvis origin).
@@ -118,6 +127,12 @@ TWIST_HELD_ABOVE_DEG = 170.0
 WEIGHTS = {
     "knee": 1.0, "ankle": 1.0, "toe": 0.5, "heel": 0.5, "shoulder": 1.5, "elbow": 1.0, "wrist": 1.0, "hand": 0.15,
 }
+
+#: End segments are their own joints' job. A hand target may move only the
+#: wrist joints, a toe or heel target only the ankles: otherwise a hand the
+#: wrists cannot point (they are regularised) drags the whole arm to make up
+#: for it — on a reachable test pose, 13 degrees of forearm error.
+END_SEGMENT_JOINTS: dict[str, str] = {"hand": "wrist", "toe": "ankle", "heel": "ankle"}
 
 #: The largest change any joint may make in one solver iteration, radians.
 #: Twelve bounded steps a frame still allow 3 rad of motion per frame, and the
@@ -204,13 +219,25 @@ def pelvis_frame(world_kp: F64, heading: float | None = None) -> F64:
 
 @dataclass
 class _Chain:
-    """Robot rest geometry the targets are rebuilt from, measured once at q = 0."""
+    """Robot rest geometry the targets are rebuilt from, measured once at q = 0.
 
-    hips: dict[str, F64]
+    The legs and arms start from *anchors*, not from the hip and shoulder
+    joints: the point directly above the robot's rest knee (at hip height) and
+    the point beside its rest shoulder directly above the rest elbow. The G1's
+    rest thighs and upper arms slant outwards — hip joint at y = 0.064, knee at
+    0.119; shoulder at 0.100, elbow at 0.147 — so starting a human limb that
+    hangs straight down from the joint itself pulled the robot's limb inwards.
+    A neutral human came out knock-kneed, ankles 0.11 m apart against 0.24 m at
+    rest and ankle roll pinned at its limit. From the anchors, a neutral human
+    maps onto the robot's neutral pose.
+    """
+
+    hips: dict[str, F64]           # leg anchors, pelvis frame
     lengths: dict[str, float]
     torso_offsets: dict[str, F64]
     waist: F64
     foot: dict[str, F64]
+    arm_anchor: dict[str, F64]     # offset from the shoulder point, in the torso link's frame
 
 
 def _rest(robot: Robot) -> _Chain:
@@ -220,12 +247,16 @@ def _rest(robot: Robot) -> _Chain:
         link, offset = G1_POINTS[name]
         return (poses[link] @ np.append(offset, 1.0))[:3]
 
-    hips = {s: poses[_HIPS[s]][:3, 3] for s in "lr"}
-    lengths = {}
+    hips, lengths, arm_anchor = {}, {}, {}
+    torso_rotation = poses["torso_link"][:3, :3]
     for s in "lr":
-        lengths[f"{s}_thigh"] = float(np.linalg.norm(point(f"{s}_knee") - hips[s]))
+        hip_joint, knee = poses[_HIPS[s]][:3, 3], point(f"{s}_knee")
+        hips[s] = np.array([knee[0], knee[1], hip_joint[2]])
+        lengths[f"{s}_thigh"] = float(hip_joint[2] - knee[2])
+        shoulder, elbow = point(f"{s}_shoulder"), point(f"{s}_elbow")
+        arm_anchor[s] = torso_rotation.T @ np.array([elbow[0] - shoulder[0], elbow[1] - shoulder[1], 0.0])
         lengths[f"{s}_shin"] = float(np.linalg.norm(point(f"{s}_ankle") - point(f"{s}_knee")))
-        lengths[f"{s}_upper_arm"] = float(np.linalg.norm(point(f"{s}_elbow") - point(f"{s}_shoulder")))
+        lengths[f"{s}_upper_arm"] = float(shoulder[2] - elbow[2])
         lengths[f"{s}_forearm"] = float(np.linalg.norm(point(f"{s}_wrist") - point(f"{s}_elbow")))
         lengths[f"{s}_hand"] = float(np.linalg.norm(point(f"{s}_hand") - point(f"{s}_wrist")))
     waist = poses[_WAIST][:3, 3]
@@ -233,7 +264,7 @@ def _rest(robot: Robot) -> _Chain:
     # At q = 0 the foot frame is the pelvis frame (x forward, z up), so these
     # offsets are already in foot-frame terms.
     foot = {f"{s}_{part}": point(f"{s}_{part}") - point(f"{s}_ankle") for s in "lr" for part in ("toe", "heel")}
-    return _Chain(hips, lengths, torso, waist, foot)
+    return _Chain(hips, lengths, torso, waist, foot, arm_anchor)
 
 
 @dataclass
@@ -297,6 +328,13 @@ class Retargeter:
                     self._to_previous[j] = max(smoothness, previous)
                     self._to_zero[j] = zero
         self._twist = {s: robot.index(f"{side}_shoulder_yaw_joint") for s, side in (("l", "left"), ("r", "right"))}
+        self._movers: dict[str, tuple[int, ...]] = {}
+        for name, (link, _offset) in self._points.items():
+            kind = name.split("_", 1)[1]
+            joints = robot.ancestors[link]
+            if kind in END_SEGMENT_JOINTS:
+                joints = tuple(j for j in joints if END_SEGMENT_JOINTS[kind] in robot.joint_names[j])
+            self._movers[name] = joints
 
     def _straight_elbow(self, side: str) -> float:
         """The elbow angle at which this arm is straightest, found on the robot's own geometry."""
@@ -379,7 +417,7 @@ class Retargeter:
             if w_upper <= 0.0:
                 continue
             link, offset = self._points[f"{s}_shoulder"]
-            current = (poses[link] @ np.append(offset, 1.0))[:3]
+            current = (poses[link] @ np.append(offset, 1.0))[:3] + poses["torso_link"][:3, :3] @ rest.arm_anchor[s]
             elbow_t = current + direction(shoulder, elbow) * rest.lengths[f"{s}_upper_arm"]
             out[f"{s}_elbow"] = (elbow_t, w_upper)
             w_fore = min(w_upper, weight(elbow, wrist))
@@ -422,7 +460,7 @@ class Retargeter:
                 link, offset = self._points[name]
                 p = (poses[link] @ np.append(offset, 1.0))[:3]
                 jac = np.zeros((3, len(q)))
-                for j in robot.ancestors[link]:
+                for j in self._movers[name]:
                     jac[:, j] = np.cross(axes[j], p - origins[j])
                 rows.append(jac)
                 residuals.append(goal - p)
@@ -439,13 +477,13 @@ class Retargeter:
         return q, error
 
     def sole_height(self, q: F64, rotation: F64) -> float:
-        """Pelvis height that puts the lowest toe or heel on the floor."""
+        """Pelvis height that puts the lowest sole corner on the floor."""
         poses = self.robot.forward(q)
         lowest = np.inf
-        for name in ("l_toe", "l_heel", "r_toe", "r_heel"):
-            link, offset = self._points[name]
-            p = rotation @ (poses[link] @ np.append(offset, 1.0))[:3]
-            lowest = min(lowest, float(p[2]))
+        for link in _SOLE_LINKS:
+            for corner in SOLE_CORNERS:
+                p = rotation @ (poses[link] @ np.append(corner, 1.0))[:3]
+                lowest = min(lowest, float(p[2]))
         return -lowest
 
     def retarget(

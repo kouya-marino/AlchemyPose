@@ -36,18 +36,36 @@ def _point(poses: dict, name: str) -> np.ndarray:
 
 
 def _human_from_robot(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """A 'human' standing exactly where the robot's points are, in the pelvis frame."""
+    """A human whose every bone points the way the robot's does, in the pelvis frame.
+
+    The exact inverse of how ``Retargeter.targets`` builds its goals: hips and
+    shoulders at the robot's joints (so the torso frame they define is the
+    robot's), and each limb chained from the robot's *anchor-relative* bone
+    vectors — limbs start from anchors above the rest knee and elbow.
+    """
     poses = G1.forward(q)
+    rest = RETARGET.rest
+    torso = poses["torso_link"][:3, :3]
     kp = np.zeros((K, 3))
-    for name, index in HUMAN_AT.items():
-        kp[index] = _point(poses, name)
-    kp[rt.L_HIP] = poses["left_hip_pitch_link"][:3, 3]
-    kp[rt.R_HIP] = poses["right_hip_pitch_link"][:3, 3]
-    for side, toes, root, middle in (("l", (rt.L_BIG_TOE, rt.L_SMALL_TOE), rt.L_HAND_ROOT, rt.L_MIDDLE_MCP),
-                                     ("r", (rt.R_BIG_TOE, rt.R_SMALL_TOE), rt.R_HAND_ROOT, rt.R_MIDDLE_MCP)):
-        kp[toes[0]] = kp[toes[1]] = _point(poses, f"{side}_toe")
-        kp[root] = _point(poses, f"{side}_wrist")
-        kp[middle] = _point(poses, f"{side}_hand")
+    for s, hip, knee, ankle, toes, heel in (
+        ("l", rt.L_HIP, rt.L_KNEE, rt.L_ANKLE, (rt.L_BIG_TOE, rt.L_SMALL_TOE), rt.L_HEEL),
+        ("r", rt.R_HIP, rt.R_KNEE, rt.R_ANKLE, (rt.R_BIG_TOE, rt.R_SMALL_TOE), rt.R_HEEL),
+    ):
+        kp[hip] = poses[f"{'left' if s == 'l' else 'right'}_hip_pitch_link"][:3, 3]
+        kp[knee] = kp[hip] + (_point(poses, f"{s}_knee") - rest.hips[s])
+        kp[ankle] = kp[knee] + (_point(poses, f"{s}_ankle") - _point(poses, f"{s}_knee"))
+        kp[toes[0]] = kp[toes[1]] = kp[ankle] + (_point(poses, f"{s}_toe") - _point(poses, f"{s}_ankle"))
+        kp[heel] = kp[ankle] + (_point(poses, f"{s}_heel") - _point(poses, f"{s}_ankle"))
+    for s, shoulder, elbow, wrist, root, middle in (
+        ("l", rt.L_SHOULDER, rt.L_ELBOW, rt.L_WRIST, rt.L_HAND_ROOT, rt.L_MIDDLE_MCP),
+        ("r", rt.R_SHOULDER, rt.R_ELBOW, rt.R_WRIST, rt.R_HAND_ROOT, rt.R_MIDDLE_MCP),
+    ):
+        kp[shoulder] = _point(poses, f"{s}_shoulder")
+        anchor = kp[shoulder] + torso @ rest.arm_anchor[s]
+        kp[elbow] = kp[shoulder] + (_point(poses, f"{s}_elbow") - anchor)
+        kp[wrist] = kp[elbow] + (_point(poses, f"{s}_wrist") - _point(poses, f"{s}_elbow"))
+        kp[root] = kp[wrist]
+        kp[middle] = kp[wrist] + (_point(poses, f"{s}_hand") - _point(poses, f"{s}_wrist"))
     scores = np.zeros(K)
     scores[np.any(kp != 0.0, axis=1)] = 0.9
     return kp, scores
@@ -266,3 +284,45 @@ def test_a_three_frame_tracking_glitch_is_flattened() -> None:
     q[20, 18] = 1.2                                   # one-frame spike on an elbow
     smoothed = smooth_motion(_motion(q), G1.lower, G1.upper)
     assert smoothed.q[:, 18].max() < 0.4
+
+
+def test_a_neutral_human_gives_the_robots_neutral_pose() -> None:
+    """Legs and arms hanging straight down must not come out knock-kneed.
+
+    The G1's rest thighs and upper arms slant outwards, so chains started at the
+    hip and shoulder joints pulled a straight human limb inwards: ankles 0.11 m
+    apart against 0.24 m at rest, ankle roll pinned at its limit. The round-trip
+    test cannot see this — it builds its human from the robot. Seen to fail on
+    the joint-anchored chains.
+    """
+    kp, scores = np.zeros((K, 3)), np.zeros(K)
+
+    def put(index: int, point: tuple[float, float, float]) -> None:
+        kp[index], scores[index] = point, 0.9
+
+    sides = (
+        (rt.L_HIP, rt.L_KNEE, rt.L_ANKLE, rt.L_HEEL, rt.L_BIG_TOE, rt.L_SMALL_TOE,
+         rt.L_SHOULDER, rt.L_ELBOW, rt.L_WRIST, 1),
+        (rt.R_HIP, rt.R_KNEE, rt.R_ANKLE, rt.R_HEEL, rt.R_BIG_TOE, rt.R_SMALL_TOE,
+         rt.R_SHOULDER, rt.R_ELBOW, rt.R_WRIST, -1),
+    )
+    for hip, knee, ankle, heel, big, small, shoulder, elbow, wrist, side in sides:
+        put(hip, (0, 0.09 * side, 0))
+        put(knee, (0, 0.09 * side, -0.42))
+        put(ankle, (0, 0.09 * side, -0.84))
+        put(heel, (-0.05, 0.09 * side, -0.9))
+        put(big, (0.15, 0.07 * side, -0.9))
+        put(small, (0.15, 0.11 * side, -0.9))
+        put(shoulder, (0, 0.18 * side, 0.5))
+        put(elbow, (0, 0.18 * side, 0.22))
+        put(wrist, (0, 0.18 * side, -0.02))
+    q = np.zeros(29)
+    for _ in range(10):
+        q, _error = RETARGET.solve(kp, scores, q)
+    for joint in ("hip_roll", "ankle_roll", "shoulder_roll"):
+        for side in ("left", "right"):
+            assert abs(q[G1.index(f"{side}_{joint}_joint")]) < 0.03, f"{side} {joint}"
+    poses = G1.forward(q)
+    rest = G1.forward(np.zeros(29))
+    separation = np.linalg.norm(_point(poses, "l_ankle") - _point(poses, "r_ankle"))
+    assert separation == pytest.approx(np.linalg.norm(_point(rest, "l_ankle") - _point(rest, "r_ankle")), abs=0.01)

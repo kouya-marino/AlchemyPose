@@ -633,3 +633,63 @@ def test_gltf_on_a_preset_without_depth_is_refused_before_any_inference(_video_s
     assert result.exit_code == 1
     assert "--preset 3d" in result.output
     assert built == []
+
+
+# --------------------------------------------------------------------- retarget
+
+
+@pytest.fixture
+def _retarget_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A 3D analysis of a robot-shaped 'human', the G1 URDF from the fixtures, no network."""
+    import numpy as np
+
+    from alchemypose import cli as cli_module
+    from alchemypose.core.schema import PersonPose, PoseFrame, PoseResult, Space
+    from alchemypose.core.topology import COCO_WHOLEBODY_133
+    from alchemypose.inference import video as video_module
+    from alchemypose.media import video as media_video
+    from alchemypose.robot import assets
+    from alchemypose.robot.retarget import camera_to_world
+    from tests.support.fakes import FakeReader
+    from tests.unit.test_robot_retarget import _human_from_robot
+
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures" / "unitree_g1"
+    monkeypatch.setattr(cli_module, "_fetch_weights", lambda preset: None)
+    monkeypatch.setattr(assets, "ensure_g1", lambda progress=None: fixtures)
+    monkeypatch.setattr(media_video, "open_video", lambda path, backend=None: FakeReader(frames=8, fps=30.0))
+    to_camera = camera_to_world(np.array([0.0, -1.0, 0.0])).T
+    frames = []
+    for i in range(8):
+        kp, scores = _human_from_robot(np.zeros(29))
+        frames.append(PoseFrame(i, i / 30.0, (320, 240), (PersonPose(
+            keypoints=np.zeros((133, 2), dtype=np.float32), scores=scores.astype(np.float32), track_id=0,
+            keypoints_3d=(kp @ to_camera.T).astype(np.float32), space_3d=Space.ROOT_REL),)))
+    result = PoseResult(COCO_WHOLEBODY_133, tuple(frames), "clip.mp4", "rtmw3d_x_384x288")
+    monkeypatch.setattr(video_module, "cached_analysis", lambda *a, **k: (result, True))
+    clip = tmp_path / "dance.mp4"
+    clip.write_bytes(b"stand-in")
+    return clip
+
+
+def test_retarget_writes_a_named_npz_and_a_36_column_csv(_retarget_stubs, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    import numpy as np
+
+    out_npz, out_csv = tmp_path / "g1.npz", tmp_path / "g1.csv"
+    result = runner.invoke(app, ["retarget", str(_retarget_stubs), "--npz", str(out_npz), "--csv", str(out_csv)])
+    assert result.exit_code == 0, result.output
+    with np.load(out_npz) as data:
+        assert data["joint_pos"].shape == (8, 29)
+        assert str(data["quat_order"]) == "wxyz"
+    rows = np.loadtxt(out_csv, delimiter=",")
+    assert rows.shape == (8, 36)
+    assert rows[0, 6] == pytest.approx(1.0, abs=1e-3), "w last in Unitree's layout"
+    assert "--input_fps 30" in result.stderr
+
+
+def test_retarget_refuses_bad_options_before_doing_anything(tmp_path: Path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    assert "nothing to write" in runner.invoke(app, ["retarget", str(clip)]).output
+    npz = ["--npz", str(tmp_path / "a.npz")]
+    assert "--root" in runner.invoke(app, ["retarget", str(clip), *npz, "--root", "flying"]).output
+    assert "--slow" in runner.invoke(app, ["retarget", str(clip), *npz, "--slow", "0.5"]).output
