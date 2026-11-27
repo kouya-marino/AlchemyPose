@@ -14,6 +14,11 @@ models/
 # repository: under APPI (Japan) and GDPR they are personal data, and a pose
 # estimator's test material is full of them.
 _local/
+# Reference media for trying the app by hand — downloaded clips and stills of
+# identifiable people, often under someone else's copyright — so the same rule
+# applies to the whole folder. Open them from disk; never commit them. The test
+# suite's own fixture, public domain and documented, lives under tests/.
+test-data/
 *.npy
 *.npz
 

@@ -956,3 +956,27 @@ def test_the_people_here_stand_clear_of_the_crop_space_corner() -> None:
                 f"in crop coordinates could land inside this person and the containment case would "
                 f"pass on a missing untransform"
             )
+
+
+def test_a_keypoint_with_no_peak_lands_on_the_image_origin_not_the_crop_corner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``decode_simcc`` zeroes a peakless keypoint in model-input space; the affine
+    would then carry that to the crop's top-left corner, on the person's own box.
+
+    Seen to fail: without the image-space re-zeroing in ``infer``, every keypoint
+    here lands at the crop corner, well inside the 320x240 image.
+    """
+    pose_key = weights.PRESETS["lite"][1]
+    width, height = weights.REGISTRY[pose_key].input_size
+    joints = len(COCO_WHOLEBODY_133)
+    silent = [
+        np.zeros((1, joints, width * 2), dtype=np.float32),
+        np.zeros((1, joints, height * 2), dtype=np.float32),
+    ]
+    engine, _det, _pose = _engine(monkeypatch, "lite", pose_outputs=silent)
+
+    person = engine.infer(_image(), source="synthetic").frames[0].people[0]
+
+    assert np.all(person.scores == 0.0)
+    assert np.all(person.keypoints == 0.0)

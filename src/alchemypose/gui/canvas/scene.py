@@ -143,6 +143,7 @@ class PoseOverlay(QObject):
         self._confidence: dict[int, float] = {}
         self._animation: QVariantAnimation | None = None
         canvas.scene_cleared.connect(self._forget_items)
+        canvas.pressed.connect(self.finish_animation)
 
     # ----------------------------------------------------------------- counts
 
@@ -472,6 +473,17 @@ class PoseOverlay(QObject):
 
     def _on_animation_finished(self) -> None:
         self._animation = None
+        self._apply_opacities()
+
+    def finish_animation(self) -> None:
+        """Jump a running draw-in to its end state; a no-op when none is running.
+
+        Called on every press on the canvas, because a joint still fading in
+        from opacity 0 is invisible to Qt's hit test and the click would miss.
+        """
+        if self._animation is None:
+            return
+        self._stop_animation()
         self._apply_opacities()
 
     def _stop_animation(self) -> None:

@@ -25,21 +25,23 @@ subset — both of which survive the fix being reverted, because clipping produc
 them — so reverting it left the suite green while the slider went inert again.
 They were rebuilt around the shape of the score distribution instead.
 
-Seven of v1's behaviours have now actually been through a revert, each one
-re-measured against the release tree rather than quoted from an older draft — one
-edit to the shipped source, the whole suite run after it, the source put back:
+Eight of v1's behaviours have now actually been through a revert — one edit to
+the shipped source, the whole suite run after it, the source put back. The first
+four rows were measured on the 1.0.0 release tree on the M5; the last four after
+the post-release tests went in, on Linux with weights cached:
 
 | Undone in the shipped source | Tests that go red |
 |---|---|
-| `PEAK_SCALE["rtmw_l_384x288"]` → 1.0 | 7 (5 of them need no weights) |
+| `peak_scale` of `rtmw_l_384x288` → 1.0 | 7 (5 of them need no weights) |
 | `normalise_crop` fed BGR instead of RGB | 5 |
 | `_effective_selection` stops narrowing to the chosen person | 3 |
 | `letterbox` pads with 0 instead of 114 | 3 |
-| `DASH_BELOW` → 0.5 and `FULL_OPACITY_ABOVE` → 0.8 | **0** |
-| `YoloxDetector._parse` stops filtering on the person class | **0** |
-| `YoloxDetector.detect` skips its defensive `nms()` call | **0** |
+| `DASH_BELOW` → 0.5 and `FULL_OPACITY_ABOVE` → 0.8 | 3 *(was 0)* |
+| `YoloxDetector._parse` stops filtering on the person class | 1 *(was 0)* |
+| `YoloxDetector.detect` skips its defensive `nms()` call | 1 *(was 0)* |
+| `infer` stops re-zeroing a peakless keypoint in image space | 1 |
 
-The three zeros are open items below. The second-order lesson holds: do not write
+The three zeros were the open items below, and are closed. The second-order lesson holds: do not write
 "every fix was verified this way" unless every fix has been. An overclaim about
 test rigour is worse than no claim, because it stops anyone checking.
 
@@ -217,10 +219,11 @@ test rigour is worse than no claim, because it stops anyone checking.
 
 ---
 
-## Open — v1
+## Closed after 1.0.0 — the v1 leftovers
 
 ### Missing tests, in the order they matter
-- [ ] **`YoloxDetector._parse` and `detect` have no coverage that can fail.**
+- [x] *Closed: two unit tests in `tests/unit/test_detector.py` over hand-built
+      rows; each goes red against its own revert.* **`YoloxDetector._parse` and `detect` have no coverage that can fail.**
       `tests/unit/test_detector.py` tests `nms` and `letterbox` and nothing else,
       and while `tests/unit/test_rtmw_wiring.py` does drive the real detector over
       stubbed sessions, every stub it feeds emits class-0 rows that do not overlap
@@ -235,7 +238,11 @@ test rigour is worse than no claim, because it stops anyone checking.
       `letterbox` padding with 0 instead of 114 turns three tests red, since
       `test_infer_hands_the_detector_raw_letterboxed_pixels` went in with
       `4ba3cdb`.)*
-- [ ] **Nothing in the suite can detect a miscalibrated opacity constant.**
+- [x] *Closed: `tests/gui/test_confidence_calibration.py`, over real scores
+      recorded in `tests/gui/fixtures/two_people_scores.json`, so it needs no
+      weights. The old constants turn all three of its tests red: 52 of 61 bones
+      dashed on `performance`, none fully opaque.*
+      **Nothing in the suite can detect a miscalibrated opacity constant.**
       `tests/gui/test_polish.py` derives its expectations *from* the constants it
       is checking — `CONFIDENT = (1.0 + FULL_OPACITY_ABOVE) / 2.0`, and the dash
       cases are written at `DASH_BELOW` and `DASH_BELOW - 0.01` — so it pins the
@@ -247,47 +254,62 @@ test rigour is worse than no claim, because it stops anyone checking.
       fraction and the full-opacity fraction stay inside the intended band. With
       the old constants that fraction was 51 dashed out of 61 bones drawn and not
       one at full opacity, so the band is easy to state.
-- [ ] `tests/unit/test_readme.py` — assert the README names the install command,
+- [x] *Closed: seven tests, the download size checked against the cached files.*
+      `tests/unit/test_readme.py` — assert the README names the install command,
       the launch command, the download size, the model and its licence. Prose
       about being kept current is not a mechanism; a test is.
 
 ### Deferred minors, to batch into one commit
-- [ ] Nothing calls `PoseOverlay.animate_in()`. It exists, it is tested, and
+- [x] *Closed — and it exposed a hit-testing gap: Qt skips fully transparent
+      items, so a click mid-animation missed. A canvas press now finishes the
+      draw-in first.* Nothing calls `PoseOverlay.animate_in()`. It exists, it is tested, and
       `MainWindow._on_result` is where it belongs — one line.
-- [ ] Nothing calls `PoseOverlay.set_image_dimmed()` either. The photograph is
+- [x] *Closed: select and solo dim, clear restores; tested at the call sites.*
+      Nothing calls `PoseOverlay.set_image_dimmed()` either. The photograph is
       meant to fall back to ~60% opacity once a selection exists, so the skeleton
       reads as the subject — `theme.DIMMED_IMAGE_OPACITY` is already 0.6 and the
       method already applies it. `SelectionController`'s `select_group` /
       `solo_group` / `clear` are the call sites.
-- [ ] Move `PEAK_SCALE` onto `ModelSpec` in `weights.py`. It is a per-model
+- [x] *Closed: `ModelSpec.peak_scale`; `rtmw.PEAK_SCALE` is derived from it.*
+      Move `PEAK_SCALE` onto `ModelSpec` in `weights.py`. It is a per-model
       constant like `input_size`, and it currently lives in `rtmw.py` away from
       everything else that describes a model. Mechanical.
-- [ ] `SelectionController._emphasised` and `PoseOverlay._emphasis` track
+- [x] *Closed as deliberate: still no panel reads emphasis from both.*
+      `SelectionController._emphasised` and `PoseOverlay._emphasis` track
       overlapping state and can legitimately disagree while soloed. Deliberate for
       now; revisit if any panel reads emphasis from both.
-- [ ] A keypoint with no peak is zeroed in *model-input* space and then affine
+- [x] *Closed: re-zeroed in image space in `infer`, with a test.*
+      A keypoint with no peak is zeroed in *model-input* space and then affine
       untransformed, so it lands at the crop's top-left corner rather than at the
       image origin — confirmed by pushing an all-zero SimCC pair through the real
       decoder and transform. Harmless while it is hidden, but at threshold 0.0 it
       is drawn there.
-- [ ] `ruff format` reports "34 files would be reformatted, 43 files already
+- [x] *Closed: not adopted — it would collapse the column-aligned comments the
+      code reads by. The README says so.* `ruff format` reports "34 files would be reformatted, 43 files already
       formatted" over `src tests main.py`. The project gates on `ruff check`,
       which passes; decide whether to adopt the formatter and do it in one commit,
       or say in the README that it is deliberately not used.
 
 ### The release itself
-- [ ] Tag `v1.0.0` and upload the built wheel and sdist to PyPI. This is the last
+- [x] *Done: the `v1.0.0` tag exists and PyPI serves 1.0.0 as the only release.*
+      Tag `v1.0.0` and upload the built wheel and sdist to PyPI. This is the last
       step of the 1.0.0 release and the only one still outstanding: the artefacts
       build clean and pass `twine check`, and `CHANGELOG.md`'s link references
       point at that exact tag name, so the tag has to be `v1.0.0` and not `1.0.0`.
       PyPI does not allow a version to be re-uploaded, so anything wrong in the
       artefact costs a version number.
-- [ ] A screenshot of the window with a multi-person image and the skeleton
+- [x] *Done: `assets/screenshot.png`, taken from the window running on Linux,
+      referenced relatively from the README. **Still open for the PyPI page:** a
+      relative path renders on GitHub only, and the repository is private, so the
+      next release needs either a public repo (and an absolute raw URL) or the
+      image left off the PyPI description.* A screenshot of the window with a multi-person image and the skeleton
       visible. This is a portfolio piece and the README is the first thing seen —
       and it is currently a page about a visual tool with no picture on it. A
       screenshot on the PyPI page needs an absolute URL to a publicly reachable
       image, which the repository cannot serve while it is private.
-- [ ] Open the window on Windows and on Linux at least once. The GUI suite proves
+- [ ] *Half done: opened on Linux (Ubuntu 22.04, X11, PySide6 6.12.0) with the
+      fixture — three people found on `performance`, drawn correctly. Windows has
+      still never been seen.* Open the window on Windows and on Linux at least once. The GUI suite proves
       the widgets construct and behave headless on `ubuntu-latest`; nobody has yet
       seen the application drawn on either platform, and the `gui-scripts` entry
       point deliberately left out of `pyproject.toml` is waiting on the same.

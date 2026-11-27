@@ -483,3 +483,64 @@ def test_choosing_everyone_after_a_solo_shows_everyone(window) -> None:  # type:
 
     assert window.canvas_overlay.keypoint_item_count == 3 * len(RENDER_GROUPS["left_hand"])
     assert {i.person_index for i in window.canvas_overlay.keypoint_items} == {0, 1, 2}
+
+
+# ------------------------------------------------------------ photograph dimming
+#
+# ``set_image_dimmed`` existed and was tested in isolation, but nothing called
+# it. These pin the call sites: a selection pushes the photograph back so the
+# skeleton reads as the subject, and clearing it brings the photograph forward.
+
+
+def test_selecting_a_group_dims_the_photograph(rig) -> None:  # type: ignore[no-untyped-def]
+    from alchemypose.gui import theme
+
+    controller, overlay, _layers = rig
+    controller.select_group("left_arm")
+    assert overlay._canvas.image_item.opacity() == pytest.approx(theme.DIMMED_IMAGE_OPACITY)
+
+
+def test_soloing_a_group_dims_the_photograph(rig) -> None:  # type: ignore[no-untyped-def]
+    from alchemypose.gui import theme
+
+    controller, overlay, _layers = rig
+    controller.solo_group("right_leg")
+    assert overlay._canvas.image_item.opacity() == pytest.approx(theme.DIMMED_IMAGE_OPACITY)
+
+
+def test_clearing_the_selection_restores_the_photograph(rig) -> None:  # type: ignore[no-untyped-def]
+    controller, overlay, _layers = rig
+    controller.solo_group("right_leg")
+    controller.clear()
+    assert overlay._canvas.image_item.opacity() == pytest.approx(1.0)
+
+
+# --------------------------------------------------------------- staggered draw-in
+
+
+def test_a_new_result_animates_the_skeleton_in(window) -> None:  # type: ignore[no-untyped-def]
+    _show(window, _grid_result())
+    animation = window.canvas_overlay._animation
+    assert animation is not None
+    assert animation.state() == animation.State.Running
+
+
+def test_a_result_with_nobody_in_it_starts_no_animation(window) -> None:  # type: ignore[no-untyped-def]
+    empty = PoseResult(
+        topology=COCO_WHOLEBODY_133,
+        frames=(PoseFrame(frame_index=0, timestamp_s=None, image_size=(500, 500), people=()),),
+        source="x",
+        model="m",
+    )
+    _show(window, empty)
+    assert window.canvas_overlay._animation is None
+
+
+def test_a_press_during_the_draw_in_finishes_it(window) -> None:  # type: ignore[no-untyped-def]
+    """Fully transparent items are invisible to Qt's hit test, so a click in the
+    first moments after a result lands must end the animation before resolving."""
+    _show(window, _grid_result())
+    assert window.canvas_overlay._animation is not None
+    window.canvas.pressed.emit()
+    assert window.canvas_overlay._animation is None
+    assert all(item.opacity() > 0.0 for item in window.canvas_overlay.keypoint_items)

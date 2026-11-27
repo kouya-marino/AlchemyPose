@@ -8,7 +8,43 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 Nothing yet. v2 is video — upload and scrub, per-frame overlay, tracking,
-temporal smoothing. `versions.md` says why it is cheap.
+temporal smoothing.
+
+## [1.1.0] — 2026-11-27
+
+The open items left over from v1, closed before video starts.
+
+### Added
+
+- **Tests for the three fixes nothing could detect being undone.** The detector's
+  person-class filter and its defensive `nms()` call each have a unit test over
+  hand-built `(dets, labels)` rows, and the confidence cues have a test against
+  a recorded score distribution (`tests/gui/fixtures/two_people_scores.json`), so
+  it needs no weights. Each was run against its own revert and went red.
+- **`tests/unit/test_readme.py`.** The install and launch commands, the
+  models-table row for the engine's real default preset, each preset's pose
+  model, the first-run download size (checked against the files when they are
+  cached) and the model licence.
+- **A screenshot in the README**, taken from the window running on Linux.
+
+### Changed
+
+- **The photograph dims when a group is selected or soloed**, and comes back when
+  the selection is cleared. `set_image_dimmed` existed and was tested; nothing
+  called it.
+- **A new result draws in, torso first.** `animate_in` existed and was tested;
+  nothing called it. Any press on the canvas now finishes the animation first,
+  because Qt leaves fully transparent items out of its hit test and a click in
+  the first 400 ms would otherwise miss.
+- **The SimCC peak scale lives on `ModelSpec`** as `peak_scale`, beside
+  `input_size` and everything else that describes a model. `rtmw.PEAK_SCALE` is
+  now derived from the registry rather than a second table.
+
+### Fixed
+
+- **A keypoint with no SimCC peak lands on the image origin**, as its zeroed
+  position claims, rather than on the top-left corner of the person's crop. It
+  is score 0 and never drawn, but exports carried the crop corner.
 
 ## [1.0.0] — 2026-09-03
 
@@ -448,5 +484,6 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0

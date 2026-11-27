@@ -19,6 +19,16 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 
 ## Shipped
 
+### v1.1 — the v1 leftovers · 1.1.0 · 2026-11-27
+
+No new capability: the open items `todo.md` carried out of 1.0.0, closed. Tests
+that can fail now guard the detector's person filter, its defensive NMS and the
+confidence-cue calibration (each seen red against its own revert); the README's
+facts are tested; the photograph dims on selection and new results draw in; a
+peakless keypoint lands on the image origin; the peak scale moved onto
+`ModelSpec`. The window was opened on Linux for the first time, and the README
+gained its screenshot.
+
 ### v1 — single image · 1.0.0 · 2026-09-03
 
 A photograph goes in; every person in it comes back with 133 keypoints, drawn as
