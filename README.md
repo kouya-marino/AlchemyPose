@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![PyPI](https://img.shields.io/badge/PyPI-v4.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![PyPI](https://img.shields.io/badge/PyPI-v4.1.0-blue.svg)](https://pypi.org/project/alchemypose/)
 [![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -16,7 +16,7 @@ leg, the face on its own.
 
 ![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/assets/screenshot.png)
 
-> **4.0.0 — photographs, video, webcam, 3D and the Unitree G1.** `pip install alchemypose`, type
+> **4.1.0 — photographs, video, webcam, 3D and the Unitree G1.** `pip install alchemypose`, type
 > `alchemypose`, and the window opens. Every person in the photograph you drop in
 > comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
 > chips and a confidence slider. The face resolves from contours to individual points
@@ -28,7 +28,9 @@ leg, the face on its own.
 > every keypoint gains a depth, shown as an orbitable skeleton beside the picture and
 > exportable as animated glTF — see [In 3D](#in-3d). Switch on **G1** and Unitree's
 > 29-joint humanoid performs the same motion beside it — see
-> [On a Unitree G1](#on-a-unitree-g1).
+> [On a Unitree G1](#on-a-unitree-g1) — and `alchemypose retarget` writes that motion
+> as reference data to train a G1 policy from — see
+> [Training a G1 policy from a video](#training-a-g1-policy-from-a-video).
 
 ---
 
@@ -53,7 +55,7 @@ alchemypose
 ```
 
 The second line opens the window: `alchemypose` on its own is the application.
-`alchemypose --version` prints `4.0.0`, and the subcommands further down do the same
+`alchemypose --version` prints `4.1.0`, and the subcommands further down do the same
 work with no window at all.
 
 From source instead, if you have access to the repository:
@@ -256,11 +258,20 @@ line — so the robot is never asked for two foot points its rigid foot cannot r
 once. The torso's facing goes into the pelvis; the joint angles are relative to it.
 
 **How well, on the reference dance clip** (300 frames, Linux): the robot's points land
-a median 2.9 cm from their targets (9.6 cm at the 95th percentile, which is where the
-tracked right arm glitches), in about 30 s for the clip. The fastest joint peaks at
-43% of its motor's rated speed, so the dance fits the robot as recorded. What the G1
-cannot do is plain in the numbers: its ankle roll travels only ±15°, so in the
-dancer's wide stance it sits at that limit for most of the clip.
+a median 3.6 cm from their targets (8.7 cm at the 95th percentile, which is where the
+tracked right arm glitches), in about 30 s for the clip. A perfectly neutral human —
+arms and legs hanging straight — comes out as the robot's own neutral pose, within
+3 mm. The fastest joint peaks at 45% of its motor's rated speed, so the dance fits the
+robot as recorded. The G1's ankle roll travels only ±15°, and reaches that limit in
+about a fifth to a third of the clip's frames.
+
+*Corrected in 4.1.0:* 4.0.0 said here that the ankle roll sat at its limit "for most of
+the clip" because of the dancer's wide stance. The stance was not the cause. The
+retarget started each leg and arm at the hip and shoulder joints, but the G1's rest
+thighs and upper arms slant outwards, so a human limb hanging straight down pulled the
+robot's inwards — a neutral human came out knock-kneed, ankles 0.11 m apart against
+0.24 m at rest. 4.1.0 starts each limb from a point above the robot's rest knee or
+elbow, and the pinning fell from 85% of frames to the figure above.
 
 **Too fast for the robot?** Every retarget is checked against the URDF's velocity
 limits, and the status bar says if a motion needs more than half of any motor's rated
@@ -272,8 +283,66 @@ averaged away.
 **What it is not.** This is kinematics: joint angles, not torques; nothing here knows
 the robot's mass, balance or contact forces, and nothing connects to a robot. A pose
 the G1 can be put in is not always one it can hold — training a policy in simulation is
-what makes a motion balanceable, and the robot-motion export for that is next on the
-[roadmap](#roadmap).
+what makes a motion balanceable. The next section writes the file for that.
+
+### Training a G1 policy from a video
+
+`alchemypose retarget` turns a clip into *reference motion*: the per-frame target a
+motion-tracking policy is trained to follow in simulation (DeepMimic-style, as in
+BeyondMimic, ASAP or Isaac Lab's tracking tasks).
+
+```console
+$ alchemypose retarget dance.mp4 --npz dance_g1.npz --csv dance_g1.csv --check
+300 frames at 30 fps · median miss 3.6 cm · peak 45% of right_shoulder_yaw_joint speed · slowed 1.00x · root fixed
+Wrote dance_g1.npz
+Wrote dance_g1.csv
+BeyondMimic: python scripts/csv_to_npz.py --input_file dance_g1.csv --input_fps 30 --output_name dance_g1 --headless
+300 frames played through MuJoCo (kinematics only)
+  link positions vs this package's FK: worst 0.001 mm
+  lowest point: -0.2 cm; frames >1 cm under the floor: 0
+  frames with self-contact: 74 (e.g. left_hip_roll_link / left_wrist_yaw_link)
+  joint samples outside the MJCF's ranges: 0
+```
+
+It runs the `3d` analysis (cached), the same smoothing and retarget as the window, and
+then builds the reference. The Export menu writes the same two files from the G1 on
+screen.
+
+**The two files.** The `.npz` is the native one, every array named — `joint_names`
+beside `joint_pos`, `quat_order` (`"wxyz"`) beside `root_quat` — with `fps`, `times`,
+`root_pos`, `joint_vel`, `root_lin_vel`, `root_ang_vel`, left/right foot `contacts`, an
+`interpolated` mask, the per-frame retarget miss, and a JSON `metadata` record of
+everything that made it (the pinned URDF and its SHA-256, the root mode, the
+slow-down, the speed budget, units, and which parts are estimates). The `.csv` is
+Unitree's own layout for retargeted G1 motion, which BeyondMimic converts directly: no
+header, 36 columns — root position, root quaternion **x y z w**, then the 29 joints in
+the URDF's order. MuJoCo wants the same 36 numbers with the quaternion **w x y z**;
+both orders were checked rather than assumed — Unitree's published dance data, read in
+this layout and played through their MJCF, stands on the floor (ankles at 5 cm), and
+read in the other order hangs upside down (ankles at 1.5 m).
+
+**Slower, to fit the motors.** `--slow auto` (the default) plays the motion as slowly
+as it takes to keep every joint within `--budget` (default 0.5) of its rated speed,
+and `--slow 1.5` slows it by a set factor. Velocities are differences of the final,
+slowed trajectory, and the reported peak is measured on exactly that.
+
+**The root is the estimate.** One camera gives joint angles well and the body's place
+in the world badly. The pelvis height puts the lowest sole corner on the floor; its
+orientation is its heading only (a monocular pelvis has no trustworthy pitch or roll).
+Travel is `--root fixed` (the default: none — right for dancing on the spot) or
+`--root planted`, which holds the stance foot still and moves the body accordingly, so
+steps carry it across the floor; that cannot represent a jump, and the file says
+"estimated" next to it.
+
+**`--check`** plays the file through Unitree's own MuJoCo model (the `sim` extra,
+`pip install "alchemypose[sim]"`): MuJoCo's link positions against this package's
+forward kinematics (the proof the conventions are right), the lowest point, frames
+with the robot's own parts touching, and joints outside their ranges. Self-contacts are
+expected at roughly this rate — Unitree's own published dance shows 75 in 600 frames
+with the same model — and are the trainer's to resolve.
+
+This is a kinematic reference for training and simulation. It is never to be streamed
+to a robot's motors: it knows nothing of balance, and a real G1 would fall.
 
 **The model.** `g1_29dof_rev_1_0` from [unitree_ros](https://github.com/unitreerobotics/unitree_ros)
 (BSD-3-Clause, © Unitree Robotics), pinned to one commit, fetched once at runtime — the
@@ -460,8 +529,8 @@ inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache 
              no Qt, so it is testable headless
 
 robot/       the Unitree G1: pinned, verified assets · URDF and forward
-             kinematics · binary STL · retargeting and the speed check —
-             no Qt, no OpenGL
+             kinematics · binary STL · retargeting and the speed check ·
+             reference-motion export · the MuJoCo check — no Qt, no OpenGL
 
 gui/         PySide6: canvas · layer tree · preset and person chips ·
              confidence slider · inspector · transport · video and webcam modes ·
@@ -528,9 +597,12 @@ result by `frame_index` and never waits on a model.
 - [x] Retargeting onto its 29 joints, inside its limits, with the speed check
 - [x] The robot beside the clip and its 3D skeleton, in step, with playback speed
 
-**v4.1 — a robot-motion export to train from.** Root pose, the 29 joint angles,
-velocities and foot contacts, in a layout MuJoCo and Isaac Lab trainers load, with a
-MuJoCo playback check.
+**v4.1 — a robot-motion export to train from.** Shipped in 4.1.0.
+
+- [x] `alchemypose retarget`: `.npz` (named arrays) and Unitree's CSV, from a video
+- [x] Root height, heading and optional planted travel, each labelled as an estimate
+- [x] Slow-down to fit the motors, with velocities from the final trajectory
+- [x] A MuJoCo kinematic check against Unitree's own model (the `sim` extra)
 
 ---
 
@@ -546,13 +618,13 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At the time of writing that is 688 tests. On a machine with the weights cached they
+At the time of writing that is 705 tests. On a machine with the weights cached they
 all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
-686 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+703 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
 `tests/integration` — and check the cache rather than downloading anything, and one
 README test compares the stated download size against the cached files, so without
-weights the same Linux run reports 674 passed and 14 skipped (the extra one parses the
-cached G1 meshes). The robot tests need no network: the G1's URDF is a test fixture,
+weights the same Linux run reports 690 passed and 15 skipped (the extra two parse the
+cached G1 meshes and play a motion through MuJoCo, which needs them). The robot tests need no network: the G1's URDF is a test fixture,
 with Unitree's licence beside it, and MuJoCo's link poses for it are recorded there. The video tests encode
 their own clips with PyAV (a `dev` dependency) and never touch a file on disk beyond
 `tmp_path`. `main.py` sits outside `src/`, so neither

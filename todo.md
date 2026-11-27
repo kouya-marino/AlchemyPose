@@ -363,11 +363,15 @@ test rigour is worse than no claim, because it stops anyone checking.
 - [ ] Confirm the target robot's `mode_machine`; `rev_1_0` is the default.
 - [ ] Retargeting runs at ~10 frames/s in pure numpy; fine offline, slow for live.
 
-### v4.1 · a robot-motion export
-- [ ] Root pose, 29 joint angles (by name), velocities, foot contacts, confidence.
-- [ ] Root travel from planted feet, labelled as an estimate (`--root fixed|planted`).
-- [ ] Verify MuJoCo `qpos` and Unitree LAFAN1 CSV conventions before matching them.
-- [ ] MuJoCo kinematic playback check, behind an optional extra.
+### v4.1 · a robot-motion export — shipped in 4.1.0
+- [x] Root pose, 29 joint angles (by name), velocities, foot contacts, confidence.
+- [x] Root travel from planted feet, labelled as an estimate (`--root fixed|planted`).
+- [x] Verify MuJoCo `qpos` and Unitree LAFAN1 CSV conventions before matching them.
+      *Read off Unitree's published data and confirmed through their MJCF.*
+- [x] MuJoCo kinematic playback check, behind an optional extra.
+- [ ] The planted root is noisy (2 m of path over a 10 s dance on the spot); a
+      contact-aware smoother, or foot-locking in the retarget itself, would do better.
+- [ ] Train a policy on an export and report what it took — the real test of the file.
 
 ---
 
