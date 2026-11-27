@@ -52,6 +52,10 @@ class ModelSpec:
     #: ``None`` for detectors. Measured, not derived from configs; see
     #: ``inference.rtmw`` for why it differs per model and how it was found.
     peak_scale: float | None = None
+    #: 3D pose models only: the half-range, in metres, of the root-relative depth
+    #: the z head's bins span (MMPose ``SimCC3DLabel.z_range``). ``None`` means
+    #: the model has no depth head.
+    z_range: float | None = None
 
 
 #: Every URL below was fetched and every digest measured by hand — none of it
@@ -124,6 +128,24 @@ REGISTRY: dict[str, ModelSpec] = {
         input_size=(288, 384),
         peak_scale=10.0,
     ),
+    # RTMW3D-x: the same 133 COCO-WholeBody keypoints as RTMW, plus a depth head.
+    # MMPose publishes only the PyTorch checkpoint (Apache-2.0); this is a
+    # third-party ONNX export of exactly that checkpoint, the one rtmlib's
+    # ``Wholebody3d`` downloads, pinned to a commit and verified by digest like
+    # everything else here. A bare ``.onnx``, not a zip. Measured: raw SimCC
+    # peaks top out at 0.98 on real frames, so the unit scale applies.
+    "rtmw3d_x_384x288": ModelSpec(
+        key="rtmw3d_x_384x288",
+        url=(
+            "https://huggingface.co/Soykaf/RTMW3D-x/resolve/a4f0d54c52ee44ee4e1dda1936d714490c6234d2/"
+            "onnx/rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.onnx"
+        ),
+        sha256="4a289c0e99d47eb595e99679d9d4a2d1def1b4241f9adcbafba44b9ff585ebcd",
+        filename="rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.onnx",
+        input_size=(288, 384),
+        peak_scale=1.0,
+        z_range=2.1744869,
+    ),
 }
 
 #: preset -> (detector key, pose key)
@@ -131,6 +153,8 @@ PRESETS: dict[str, tuple[str, str]] = {
     "lite": ("yolox_nano", "rtmw_m_256x192"),
     "balanced": ("yolox_tiny", "dwpose_l_384x288"),
     "performance": ("yolox_s", "rtmw_l_384x288"),
+    # The 3D preset: everything the 2D presets give, plus ``keypoints_3d``.
+    "3d": ("yolox_s", "rtmw3d_x_384x288"),
 }
 
 

@@ -22,7 +22,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QFileDialog, QWidget
 
-from alchemypose.core.schema import PoseResult
+from alchemypose.core.schema import PoseFrame, PoseResult
 from alchemypose.core.serialize import to_csv, to_json
 from alchemypose.errors import AlchemyPoseError
 from alchemypose.gui.canvas.view import PoseCanvas
@@ -54,6 +54,22 @@ def export_json(result: PoseResult, path: Path) -> None:
 def export_csv(result: PoseResult, path: Path) -> None:
     """One row per keypoint — the flat form analysts ask for."""
     _write_text(to_csv(result), path)
+
+
+def export_glb(
+    result: PoseResult, path: Path, frames: tuple[PoseFrame, ...] | None = None, track_id: int = 0
+) -> None:
+    """One person's 3D motion as an animated, skinned skeleton (``core.gltf``)."""
+    from alchemypose.core.gltf import NoMotion, skeleton_glb
+
+    try:
+        payload = skeleton_glb(result, frames=frames, track_id=track_id)
+    except NoMotion as exc:
+        raise ExportError(str(exc)) from exc
+    try:
+        path.write_bytes(payload)
+    except OSError as exc:
+        raise ExportError(f"Could not write {path}: {exc.strerror or exc}") from exc
 
 
 def export_png(canvas: PoseCanvas, path: Path) -> None:

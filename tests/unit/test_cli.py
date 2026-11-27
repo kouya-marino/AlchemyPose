@@ -625,3 +625,11 @@ def test_video_reports_a_missing_file_without_a_traceback(tmp_path: Path) -> Non
     result = runner.invoke(app, ["video", str(tmp_path / "missing.mp4")])
     assert result.exit_code == 1
     assert "not found" in result.output
+
+
+def test_gltf_on_a_preset_without_depth_is_refused_before_any_inference(_video_stubs, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    clip, built = _video_stubs
+    result = runner.invoke(app, ["video", str(clip), "--preset", "lite", "--gltf", str(tmp_path / "a.glb")])
+    assert result.exit_code == 1
+    assert "--preset 3d" in result.output
+    assert built == []

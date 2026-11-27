@@ -7,7 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet. v3 is 3D — RTMW3D, `keypoints_3d`, and an orbitable view.
+Nothing yet. v4 is the Unitree G1: the same motion on the robot, then a
+robot-motion export to train from.
+
+## [3.0.0] — 2026-11-27
+
+v3 — 3D. A major version because `PersonPose.keypoints_3d` is now filled and the
+models table gained a preset; nothing a 2.x reader used moved.
+
+### Added
+
+- **The `3d` preset: YOLOX-s + RTMW3D-x.** The same 133 keypoints in the same order,
+  plus a depth head. The weights are a third-party ONNX export of MMPose's
+  Apache-2.0 checkpoint, pinned to a commit and verified by SHA-256 like the rest.
+  Depth is decoded exactly as MMPose's `SimCC3DLabel` does — checked by the
+  predicted root landing at 0.00 ± 0.01 m on real frames — not as rtmlib does.
+- **`keypoints_3d` is populated** (`core.lifting`): metres, root-relative, OpenCV
+  axes. Pixel offsets become metres from a 0.5 m shoulder-to-hip assumption solved
+  against the torso's own depth extent, so a lean towards the camera is not read as
+  distance.
+- **An orbitable 3D panel** beside the picture, drawn under the canvas's own
+  selection, threshold and colour rules, playing in step with video. pyqtgraph over
+  PyOpenGL (the `threed` extra); a sentence instead where there is no OpenGL.
+- **A preset box in the toolbar**, which re-runs whatever is open with the new
+  models.
+- **glTF export** (`core.gltf`): one person's motion as an animated `.glb` — a node
+  per keypoint plus a line mesh skinned to them — from the Export menu or
+  `--gltf` on `alchemypose image` and `alchemypose video`. Validated by the Khronos
+  glTF validator with no errors or warnings.
+- **A warning when the CPU onnxruntime build shadows the GPU one** — which is what
+  any `pip install -U alchemypose` after switching does, silently moving everything
+  back to the CPU.
 
 ## [2.0.0] — 2026-11-27
 
@@ -519,7 +549,8 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyPose/releases/tag/v1.0.0

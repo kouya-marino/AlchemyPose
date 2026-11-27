@@ -95,6 +95,43 @@ def chosen_providers(prefer_coreml: bool, available: Sequence[str], prefer_cuda:
 
 
 _dlls_preloaded = False
+_shadow_checked = False
+
+
+def gpu_build_shadowed(installed: Sequence[str], available: Sequence[str]) -> bool:
+    """Whether the GPU build is installed but the CPU build's files are the ones loaded.
+
+    ``onnxruntime`` and ``onnxruntime-gpu`` install the same ``onnxruntime``
+    package directory. This project depends on the former by name, so any
+    ``pip install -U alchemypose`` after a switch to the GPU build reinstalls
+    the CPU one over it — both then show in ``pip list``, the CPU files win, and
+    CUDA silently disappears. Found exactly that way, on the machine the CUDA
+    numbers come from: a 300-frame clip that takes 23 s on the GPU spent
+    minutes on the CPU without a word.
+    """
+    return "onnxruntime-gpu" in installed and "onnxruntime" in installed and CUDA not in available
+
+
+def _warn_if_gpu_build_shadowed() -> None:
+    global _shadow_checked
+    if _shadow_checked:
+        return
+    _shadow_checked = True
+    from importlib import metadata
+
+    installed = []
+    for name in ("onnxruntime", "onnxruntime-gpu"):
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+        installed.append(name)
+    if gpu_build_shadowed(installed, ort.get_available_providers()):
+        _log.warning(
+            "onnxruntime-gpu is installed but the CPU onnxruntime build is shadowing it, so CUDA is "
+            "unavailable and everything runs on the CPU. Fix: pip uninstall -y onnxruntime onnxruntime-gpu "
+            '&& pip install "onnxruntime-gpu[cuda,cudnn]"'
+        )
 
 
 def _preload_cuda_libraries() -> None:
@@ -187,6 +224,7 @@ def make_session(path: Path, *, prefer_coreml: bool, prefer_cuda: bool = True) -
     provider option that persists compiled models between sessions; nothing
     here passes it, and what it would buy has not been measured.
     """
+    _warn_if_gpu_build_shadowed()
     providers = chosen_providers(prefer_coreml, ort.get_available_providers(), prefer_cuda=prefer_cuda)
     if providers == [CPU]:
         return ort.InferenceSession(str(path), providers=[CPU])

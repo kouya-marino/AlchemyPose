@@ -39,6 +39,8 @@ MEASURED_RAW_PEAKS: dict[str, tuple[float, float, float]] = {
     "rtmw_m_256x192": (0.561, 0.920, 1.055),
     "dwpose_l_384x288": (0.062, 0.789, 1.016),
     "rtmw_l_384x288": (0.938, 4.898, 8.576),
+    # Measured on Linux, CUDA provider, over the three people YOLOX-s finds.
+    "rtmw3d_x_384x288": (0.306, 0.811, 1.002),
 }
 
 #: The most confident joint in a photograph must read as confident.

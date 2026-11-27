@@ -114,3 +114,27 @@ def decode_simcc(
 
     keypoints[raw_peak <= 0.0] = 0.0
     return keypoints, scores
+
+
+def decode_simcc_depth(
+    simcc_z: NDArray[np.float32], z_range: float, simcc_split_ratio: float = 2.0
+) -> NDArray[np.float32]:
+    """RTMW3D's depth head -> root-relative depth in metres, ``(N, K)``.
+
+    Exactly MMPose's ``SimCC3DLabel.decode``: the bin index divided by the split
+    ratio is a position along a depth axis as long as the model's input width
+    (288 for RTMW3D), and the middle of that axis is the root:
+    ``z = (z_bin / ratio / (depth / 2) - 1) * z_range``. Verified on real frames
+    rather than taken on trust: decoded this way, the predicted root (the
+    midpoint of the hips, MMPose's ``root_index=(11, 12)``) lands at
+    ``0.00 ± 0.01`` m, as a root-relative quantity must. rtmlib divides by half
+    the input *height* instead (384 / 2), which pushes that root to about
+    -0.5 m; it is not copied here.
+
+    Positive z is *away* from the camera — the ears decode behind the nose on a
+    person facing it — which is the OpenCV camera convention the rest of the 3D
+    side uses.
+    """
+    depth_bins = simcc_z.shape[-1] / simcc_split_ratio
+    z_locs = np.argmax(simcc_z, axis=2).astype(np.float32) / simcc_split_ratio
+    return ((z_locs / (depth_bins / 2.0) - 1.0) * z_range).astype(np.float32)

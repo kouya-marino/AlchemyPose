@@ -6,9 +6,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -32,6 +33,7 @@ from alchemypose.inference import weights
 from alchemypose.inference.engine import PoseEngine
 
 if TYPE_CHECKING:
+    from alchemypose.gui.bridge import WorkerBridge
     from alchemypose.gui.export import SavePrompt
     from alchemypose.inference.video import FrameEngine
 
@@ -42,6 +44,9 @@ DEFAULT_PRESET = "performance"
 WINDOW_TITLE = "AlchemyPose"
 WINDOW_GEOMETRY = (1440, 900)
 DEFAULT_CONFIDENCE_THRESHOLD = 0.3
+
+#: How each preset reads in the toolbar.
+PRESET_LABELS: dict[str, str] = {"lite": "Lite", "balanced": "Balanced", "performance": "Performance", "3d": "3D"}
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
 VIDEO_FILTER = "Videos (*.mp4 *.mov *.m4v *.avi *.mkv *.webm)"
 MEDIA_FILTER = (
@@ -54,10 +59,11 @@ EXPORT_KINDS: tuple[tuple[str, str, str], ...] = (
     ("Keypoints as JSON…", "json", "JSON (*.json)"),
     ("Keypoints as CSV…", "csv", "CSV (*.csv)"),
     ("Overlay as PNG…", "png", "PNG image (*.png)"),
+    ("3D motion as glTF…", "glb", "glTF binary (*.glb)"),
 )
 
 
-def default_engine_factory() -> PoseEngine:
+def default_engine_factory(preset: str = DEFAULT_PRESET) -> PoseEngine:
     """Build the real engine.
 
     Called by the worker *on its thread*, the first time a job runs. The import
@@ -66,7 +72,7 @@ def default_engine_factory() -> PoseEngine:
     """
     from alchemypose.inference.rtmw import RTMWEngine
 
-    return RTMWEngine(preset=DEFAULT_PRESET)
+    return RTMWEngine(preset=preset)
 
 
 def _weights_progress(key: str, announce: Callable[[str], None]) -> Callable[[int, int], None]:
@@ -108,7 +114,9 @@ def _weights_progress(key: str, announce: Callable[[str], None]) -> Callable[[in
     return report
 
 
-def _fetching_engine_factory(announce: Callable[[str], None]) -> Callable[[], PoseEngine]:
+def _fetching_engine_factory(
+    announce: Callable[[str], None], preset: str = DEFAULT_PRESET
+) -> Callable[[], PoseEngine]:
     """The factory the worker actually calls: fetch the weights aloud, then build.
 
     ``RTMWEngine`` fetches its own weights and says nothing at all while it
@@ -131,14 +139,14 @@ def _fetching_engine_factory(announce: Callable[[str], None]) -> Callable[[], Po
             spoke = True
             announce(message)
 
-        for key in weights.PRESETS[DEFAULT_PRESET]:
+        for key in weights.PRESETS[preset]:
             weights.ensure(key, progress=_weights_progress(key, speak))
         if spoke:
             # Only after a download, and only because the alternative is a
             # status bar frozen at "100%" for as long as CoreML takes to
             # compile the graph it has just been handed.
             announce("Model weights ready. Loading ...")
-        return default_engine_factory()
+        return default_engine_factory(preset)
 
     return factory
 
@@ -174,7 +182,6 @@ class MainWindow(QMainWindow):
         self.resize(*WINDOW_GEOMETRY)
         self.setStyleSheet(theme.STYLESHEET)
 
-        from alchemypose.gui.bridge import WorkerBridge
         from alchemypose.gui.canvas.interaction import SelectionController
         from alchemypose.gui.canvas.scene import PoseOverlay
         from alchemypose.gui.canvas.view import PoseCanvas
@@ -184,8 +191,12 @@ class MainWindow(QMainWindow):
         from alchemypose.gui.panels.presets import PresetBar
         from alchemypose.gui.panels.transport import TransportBar
         from alchemypose.gui.video import VideoController
+        from alchemypose.gui.view3d.widget import Skeleton3DView
 
         self._result: PoseResult | None = None
+        self._preset = DEFAULT_PRESET
+        self._injected_engine_factory = engine_factory
+        self._injected_video_factory = video_engine_factory
         self._pending_source: str | None = None
         self._person: int | None = None
         self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
@@ -219,10 +230,19 @@ class MainWindow(QMainWindow):
         stage_layout.addWidget(self.transport)
         self.stage_layout = stage_layout
 
+        # The 3D panel sits between the picture and the controls. It is shown
+        # whenever what is on screen carries 3D keypoints (the 3D preset).
+        self.view3d = Skeleton3DView()
+        self.view3d.setMinimumWidth(320)
+        self.view3d.hide()
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(stage)
+        splitter.addWidget(self.view3d)
         splitter.addWidget(side)
-        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        self.splitter = splitter
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -256,21 +276,12 @@ class MainWindow(QMainWindow):
         # Every path from the worker thread to this window is a signal, and all
         # three connections below are queued, so the slots run here, not there.
         self.weights_progress.connect(self.set_status)
-        self._bridge = WorkerBridge(
-            engine_factory or _fetching_engine_factory(self.weights_progress.emit),
-            parent=self,
-        )
-        self._bridge.result_ready.connect(self._on_result)
-        self._bridge.failed.connect(self._on_failed)
-        self._bridge.start()
+        self._bridge = self._make_bridge()
 
         # Video: its own engine, built lazily on the analysis thread. The cast
         # is honest — the fetching factory builds an RTMWEngine, which has
         # ``infer_frame`` — but the image worker's protocol does not promise it.
-        default_video_factory = cast(
-            "Callable[[], FrameEngine]", _fetching_engine_factory(self.weights_progress.emit)
-        )
-        self.video = VideoController(video_engine_factory or default_video_factory, DEFAULT_PRESET, parent=self)
+        self.video = VideoController(self._video_factory(), self._preset, parent=self)
         self._video_first_frame = False
         self.video.frame_ready.connect(self._on_video_frame)
         self.video.analysis_progress.connect(self._on_video_progress)
@@ -282,7 +293,7 @@ class MainWindow(QMainWindow):
         self.transport.smoothing_toggled.connect(self.video.set_smoothing)
         from alchemypose.gui.live import LiveController
 
-        self.live = LiveController(self._bridge.submit, parent=self)
+        self.live = LiveController(lambda image, source: self._bridge.submit(image, source), parent=self)
         self._live_first_frame = False
         self.live.frame_ready.connect(self._on_live_frame)
         self.live.failed.connect(self._on_live_failed)
@@ -313,6 +324,17 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.webcam_action)
         toolbar.addSeparator()
 
+        self.preset_box = QComboBox()
+        for name in weights.PRESETS:
+            self.preset_box.addItem(PRESET_LABELS.get(name, name), name)
+        self.preset_box.setCurrentIndex(list(weights.PRESETS).index(self._preset))
+        self.preset_box.setToolTip("Model preset. 3D adds a depth for every keypoint and the 3D view.")
+        self.preset_box.currentIndexChanged.connect(
+            lambda _i: self.set_preset(str(self.preset_box.currentData()))
+        )
+        toolbar.addWidget(self.preset_box)
+        toolbar.addSeparator()
+
         self.people = PersonBar()
         self.people.person_chosen.connect(self._on_person_chosen)
         self.people.everyone_chosen.connect(self._on_everyone_chosen)
@@ -340,6 +362,100 @@ class MainWindow(QMainWindow):
         self._confidence_label = QLabel(f"{self._confidence_threshold:.2f}")
         self._confidence_label.setFixedWidth(36)
         toolbar.addWidget(self._confidence_label)
+
+    # ----------------------------------------------------------------- preset
+
+    def _make_bridge(self) -> WorkerBridge:
+        from alchemypose.gui.bridge import WorkerBridge
+
+        factory = self._injected_engine_factory or _fetching_engine_factory(self.weights_progress.emit, self._preset)
+        bridge = WorkerBridge(factory, parent=self)
+        bridge.result_ready.connect(self._on_result)
+        bridge.failed.connect(self._on_failed)
+        bridge.start()
+        return bridge
+
+    def _video_factory(self) -> Callable[[], FrameEngine]:
+        if self._injected_video_factory is not None:
+            return self._injected_video_factory
+        # Honest cast: the fetching factory builds an RTMWEngine, which has
+        # ``infer_frame``; the image worker's protocol just does not promise it.
+        return cast("Callable[[], FrameEngine]", _fetching_engine_factory(self.weights_progress.emit, self._preset))
+
+    @property
+    def preset(self) -> str:
+        return self._preset
+
+    def set_preset(self, preset: str) -> None:
+        """Switch models, and re-run whatever is open with the new ones.
+
+        The image worker is rebuilt rather than reconfigured: its engine is
+        built lazily on its own thread, and a fresh worker is the one way to be
+        sure no job for the old preset is still in flight to land afterwards.
+        """
+        if preset == self._preset or preset not in weights.PRESETS:
+            return
+        self._preset = preset
+        index = list(weights.PRESETS).index(preset)
+        if self.preset_box.currentIndex() != index:
+            self.preset_box.blockSignals(True)
+            self.preset_box.setCurrentIndex(index)
+            self.preset_box.blockSignals(False)
+        self._bridge.stop()
+        self._bridge.deleteLater()
+        self._bridge = self._make_bridge()
+        self.video.set_engine(self._video_factory(), preset)
+
+        source = self._pending_source
+        if self.live.active:
+            self.live.stop()
+            self._on_webcam_toggled(True)
+        elif source:
+            self.open_path(Path(source))
+        self.set_status(f"Preset: {PRESET_LABELS.get(preset, preset)}")
+
+    # -------------------------------------------------------------------- 3D
+
+    def _refresh_3d(self) -> None:
+        """Mirror what the canvas draws into the 3D panel, when there is any 3D."""
+        from alchemypose.gui.view3d.geometry import build
+
+        result = self._result
+        has_3d = result is not None and any(
+            p.keypoints_3d is not None for f in result.frames[:1] for p in f.people
+        )
+        wanted = has_3d or self._preset == "3d"
+        if wanted != self.view3d.isVisible():
+            self.view3d.setVisible(wanted)
+            self._share_width()
+        if wanted:
+            self.view3d.set_geometry(build(result, self._effective_selection(), self._confidence_threshold))
+
+    def _share_width(self) -> None:
+        """Split the width between picture, 3D and controls whenever a panel comes or goes.
+
+        A ``QSplitter`` hands a newly shown widget whatever it likes, which left
+        the picture a sliver beside an enormous 3D view. The picture is re-fitted
+        afterwards, on the next turn of the event loop, once the splitter has
+        actually resized it.
+        """
+        visible_3d = [w for w in (self.view3d, getattr(self, "robot_view", None)) if w is not None and w.isVisible()]
+        total = max(self.splitter.width(), 1)
+        side = 280
+        if visible_3d:
+            share = (total - side) // (len(visible_3d) + 1)
+            sizes = [share]
+            sizes += [share if w in visible_3d else 0 for w in self._splitter_panels()]
+            sizes.append(side)
+        else:
+            sizes = [total - side] + [0 for _ in self._splitter_panels()] + [side]
+        self.splitter.setSizes(sizes)
+        QTimer.singleShot(0, self.canvas.fit_to_window)
+
+    def _splitter_panels(self) -> list[QWidget]:
+        """The optional panels between the picture and the controls, in splitter order."""
+        panels = (self.splitter.widget(i) for i in range(1, self.splitter.count() - 1))
+        return [panel for panel in panels if panel is not None]
 
     # ------------------------------------------------------------------ export
 
@@ -386,7 +502,7 @@ class MainWindow(QMainWindow):
         'this cannot be None by now' assertions: the writer it returns closes
         over the result it just checked.
         """
-        from alchemypose.gui.export import export_csv, export_json, export_png
+        from alchemypose.gui.export import export_csv, export_glb, export_json, export_png
 
         if suffix == "png":
             if self.canvas.image_item is None:
@@ -398,6 +514,12 @@ class MainWindow(QMainWindow):
         result = self.video.result if self.video.is_open else self._result
         if result is None:
             return None
+        if suffix == "glb":
+            if not any(p.keypoints_3d is not None for f in result.frames for p in f.people):
+                return None
+            track = 0 if self._person is None else self._person
+            frames = self.video.smoothed_frames if self.video.is_open else None
+            return lambda path: export_glb(result, path, frames=frames, track_id=track)
         if suffix == "json":
             return lambda path: export_json(result, path)
         return lambda path: export_csv(result, path)
@@ -490,6 +612,7 @@ class MainWindow(QMainWindow):
             self._person = None
         self._result = view
         self.canvas_overlay.set_result(view, self._effective_selection(), self._confidence_threshold)
+        self._refresh_3d()
         noun = "person" if count == 1 else "people"
         self.set_status(f"Webcam · {count} {noun} · {view.model}")
 
@@ -573,6 +696,7 @@ class MainWindow(QMainWindow):
                 self._effective_selection(),
                 self._confidence_threshold,
             )
+        self._refresh_3d()
 
     def _on_video_progress(self, done: int, total: int) -> None:
         self.transport.set_analysis_progress(done, total)
@@ -623,6 +747,7 @@ class MainWindow(QMainWindow):
         self._person = None
         self.people.set_people(count)
         self.canvas_overlay.set_result(result, self._effective_selection(), self._confidence_threshold)
+        self._refresh_3d()
         if count:
             self.canvas_overlay.animate_in()
             noun = "person" if count == 1 else "people"
@@ -661,6 +786,7 @@ class MainWindow(QMainWindow):
         this method.
         """
         self.canvas_overlay.set_selection(self._effective_selection())
+        self._refresh_3d()
 
     def _apply_preset(self, name: str) -> None:
         """A chip only ever writes to the tree; the tree tells everyone else.
@@ -741,6 +867,7 @@ class MainWindow(QMainWindow):
         finally:
             self.confidence_slider.blockSignals(False)
         self.canvas_overlay.set_confidence_threshold(value)
+        self._refresh_3d()
 
     def _on_slider_moved(self, ticks: int) -> None:
         self.set_confidence_threshold(ticks / 100.0)

@@ -224,6 +224,15 @@ def test_make_session_demotes_the_real_yolox_graph_to_cpu() -> None:
 # ------------------------------------------------------------------------ CUDA
 
 
+def test_a_shadowed_gpu_build_is_recognised() -> None:
+    from alchemypose.inference.session import gpu_build_shadowed
+
+    assert gpu_build_shadowed(["onnxruntime", "onnxruntime-gpu"], [CPU])
+    assert not gpu_build_shadowed(["onnxruntime-gpu"], [CUDA, CPU])          # the healthy GPU install
+    assert not gpu_build_shadowed(["onnxruntime"], [CPU])                    # the ordinary CPU install
+    assert not gpu_build_shadowed(["onnxruntime", "onnxruntime-gpu"], [CUDA, CPU])
+
+
 def test_cuda_is_requested_first_when_the_gpu_build_offers_it() -> None:
     assert chosen_providers(False, [CUDA, CPU], prefer_cuda=True) == [CUDA, CPU]
     assert chosen_providers(True, [CUDA, CPU], prefer_cuda=True) == [CUDA, CPU]

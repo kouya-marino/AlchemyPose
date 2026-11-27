@@ -108,6 +108,11 @@ class VideoController(QObject):
         self._finished.connect(self._on_finished)
         self._failed.connect(self._on_failed)
 
+    def set_engine(self, engine_factory: Callable[[], FrameEngine], preset: str) -> None:
+        """Use a different engine for the next clip opened. The current one is not re-run here."""
+        self._engine_factory = engine_factory
+        self._preset = preset
+
     # -------------------------------------------------------------- queries
 
     @property

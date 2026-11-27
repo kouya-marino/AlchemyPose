@@ -299,10 +299,9 @@ test rigour is worse than no claim, because it stops anyone checking.
       PyPI does not allow a version to be re-uploaded, so anything wrong in the
       artefact costs a version number.
 - [x] *Done: `assets/screenshot.png`, taken from the window running on Linux,
-      referenced relatively from the README. **Still open for the PyPI page:** a
-      relative path renders on GitHub only, and the repository is private, so the
-      next release needs either a public repo (and an absolute raw URL) or the
-      image left off the PyPI description.* A screenshot of the window with a multi-person image and the skeleton
+      referenced from the README. The repository went public with 3.0.0, and
+      the README now points at absolute raw URLs (tested), so PyPI renders it too;
+      the 1.1.0 and 2.0.0 pages show broken images.* A screenshot of the window with a multi-person image and the skeleton
       visible. This is a portfolio piece and the README is the first thing seen —
       and it is currently a page about a visual tool with no picture on it. A
       screenshot on the PyPI page needs an absolute URL to a publicly reachable
@@ -341,17 +340,25 @@ test rigour is worse than no claim, because it stops anyone checking.
 - [ ] Identity can swap when two people cross completely in front of each other;
       IoU has no appearance model. Revisit if multi-person clips matter.
 
-### v3 · 3D
-- [ ] RTMW3D in place of RTMW. Same 133-keypoint topology plus a third
+### v3 · 3D — shipped in 3.0.0
+- [x] *As the `3d` preset rather than in place of RTMW, so the 2D presets keep their
+      speed.* RTMW3D in place of RTMW. Same 133-keypoint topology plus a third
       coordinate, so the layer tree, render groups, presets and selection logic
       carry over unchanged.
-- [ ] Populate `keypoints_3d` and set `space_3d`.
-- [ ] The orbitable viewport, on the declared `threed` extra (`pyqtgraph` +
+- [x] Populate `keypoints_3d` and set `space_3d`.
+- [x] The orbitable viewport, on the declared `threed` extra (`pyqtgraph` +
       `PyOpenGL`). **Never** `PySide6.QtQuick3D` or `PySide6.QtGraphs` — both are
       commercial-or-GPLv3 with no LGPL option, and importing either relicenses the
       distributed application.
-- [ ] glTF export, converting to y-up at the boundary and nowhere else.
-- [ ] `core/h36m.py` finally gets a caller.
+- [x] glTF export, converting to y-up at the boundary and nowhere else.
+- [ ] `core/h36m.py` finally gets a caller. *Moved to v4: the G1 retargeting.*
+
+### v4 · the Unitree G1
+- [ ] Load `g1_29dof_rev_1_0.urdf` and its meshes at runtime, pinned and verified.
+- [ ] Retarget the 3D skeleton to the 29 joints, within the joint limits.
+- [ ] The robot beside the clip and its 3D skeleton, in step.
+- [ ] A robot-motion export for training: root pose, joint angles, velocities,
+      foot contacts, in a MuJoCo-loadable layout, with a playback check.
 
 ---
 
