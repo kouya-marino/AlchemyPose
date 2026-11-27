@@ -487,12 +487,12 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At the time of writing that is 649 tests. On a machine with the weights cached they
+At the time of writing that is 650 tests. On a machine with the weights cached they
 all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
-647 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+648 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
 `tests/integration` — and check the cache rather than downloading anything, and one
 README test compares the stated download size against the cached files, so without
-weights the same Linux run reports 636 passed and 13 skipped. The video tests encode
+weights the same Linux run reports 637 passed and 13 skipped. The video tests encode
 their own clips with PyAV (a `dev` dependency) and never touch a file on disk beyond
 `tmp_path`. `main.py` sits outside `src/`, so neither
 `ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
