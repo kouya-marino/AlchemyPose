@@ -44,24 +44,24 @@ _IMAGENET_MEAN_RGB: F32 = np.array([123.675, 116.28, 103.53], dtype=np.float32)
 _IMAGENET_STD_RGB: F32 = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 
 #: Raw SimCC peak height that means "fully confident" for each pose model — the
-#: divisor ``decode_simcc`` uses to turn a raw peak into a 0..1 confidence.
+#: divisor ``decode_simcc`` uses to turn a raw peak into a 0..1 confidence. The
+#: numbers live on ``weights.ModelSpec.peak_scale``, beside everything else that
+#: describes a model; this is the per-key view the decoder and tests read.
 #:
 #: Why it differs per model: ``KLDiscretLoss`` trains ``softmax(pred * beta)``
 #: towards ``softmax(target * label_beta)`` with a unit-height Gaussian target, so
 #: a confident peak converges to about ``label_beta / beta`` — 1.0 for the RTMPose
 #: body / DWPose configs (``beta=10``) and 10.0 for the RTMW configs (``beta=1,
-#: label_beta=10``). Every value below was checked against real output on four
+#: label_beta=10``). Every value was checked against real output on four
 #: photographs: RTMW-m peaks at 1.03, DWPose-l at 1.01, RTMW-l at 8.6, all with
 #: the same ranking of confident versus doubtful joints.
 #: RTMW-m's *published* config says ``beta=1`` yet its shipped ONNX (a distilled
-#: checkpoint) behaves like a ``beta=10`` model, which is why this table is
+#: checkpoint) behaves like a ``beta=10`` model, which is why the table is
 #: measured, not derived from configs. Every pose model in ``weights.PRESETS``
-#: needs an entry; a missing one raises rather than silently assuming 1.0 —
+#: needs one; a missing one raises rather than silently assuming 1.0 —
 #: assuming is exactly how a 10x-scaled score went unnoticed the first time.
 PEAK_SCALE: dict[str, float] = {
-    "rtmw_m_256x192": 1.0,
-    "dwpose_l_384x288": 1.0,
-    "rtmw_l_384x288": 10.0,
+    key: spec.peak_scale for key, spec in weights.REGISTRY.items() if spec.peak_scale is not None
 }
 
 
@@ -72,7 +72,7 @@ def peak_scale_for(pose_key: str) -> float:
     except KeyError:
         raise WeightsError(
             f"no SimCC peak scale recorded for pose model {pose_key!r}; measure its raw peak "
-            f"height on real images and add it to rtmw.PEAK_SCALE (known: {sorted(PEAK_SCALE)})"
+            f"height on real images and set ModelSpec.peak_scale in weights.py (known: {sorted(PEAK_SCALE)})"
         ) from None
 
 
@@ -126,6 +126,11 @@ class RTMWEngine:
 
             kp_model, scores = decode_simcc(simcc_x, simcc_y, peak_scale=self._peak_scale)
             kp_image = affine_untransform(kp_model, affine)[0]
+            # ``decode_simcc`` zeroes a peakless keypoint in *model-input* space,
+            # which the affine then carries to the crop's top-left corner — a
+            # plausible-looking spot on the person's box. Zero it again here,
+            # in image space, so "no peak" means the image origin it claims to.
+            kp_image[scores[0] <= 0.0] = 0.0
 
             people.append(
                 PersonPose(

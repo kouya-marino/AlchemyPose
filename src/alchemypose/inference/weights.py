@@ -48,6 +48,10 @@ class ModelSpec:
     sha256: str
     filename: str
     input_size: tuple[int, int]  # (width, height) the model expects
+    #: Raw SimCC peak height that means "fully confident" — pose models only,
+    #: ``None`` for detectors. Measured, not derived from configs; see
+    #: ``inference.rtmw`` for why it differs per model and how it was found.
+    peak_scale: float | None = None
 
 
 #: Every URL below was fetched and every digest measured by hand — none of it
@@ -96,6 +100,7 @@ REGISTRY: dict[str, ModelSpec] = {
         sha256="936fca9632e6f9fa295bdc9090b4b936a1454470f0b09ef802d4790b9bbb563c",
         filename="rtmw-dw-m-s_simcc-cocktail14_270e-256x192_20231122.onnx",
         input_size=(192, 256),
+        peak_scale=1.0,
     ),
     "dwpose_l_384x288": ModelSpec(
         key="dwpose_l_384x288",
@@ -106,6 +111,7 @@ REGISTRY: dict[str, ModelSpec] = {
         sha256="8cfecfc2226d8e14b510c2fd28442226c518b4d60690535753187877411d4005",
         filename="rtmpose-l_simcc-ucoco_dw-ucoco_270e-384x288-2438fd99_20230728.onnx",
         input_size=(288, 384),
+        peak_scale=1.0,
     ),
     "rtmw_l_384x288": ModelSpec(
         key="rtmw_l_384x288",
@@ -116,6 +122,7 @@ REGISTRY: dict[str, ModelSpec] = {
         sha256="bd033156e5104c4f5d2edfe0453e02661e30a2f3da453ec93c8764d561b83054",
         filename="rtmw-dw-x-l_simcc-cocktail14_270e-384x288_20231122.onnx",
         input_size=(288, 384),
+        peak_scale=10.0,
     ),
 }
 
