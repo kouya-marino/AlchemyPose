@@ -105,6 +105,7 @@ EXPECTED: dict[str, dict[float, float]] = {
     "rtmw_m_256x192": {CONFIDENT_PEAK: 1.0, FAINT_PEAK: 0.4, OVERSHOOT_PEAK: 1.0},
     "dwpose_l_384x288": {CONFIDENT_PEAK: 1.0, FAINT_PEAK: 0.4, OVERSHOOT_PEAK: 1.0},
     "rtmw_l_384x288": {CONFIDENT_PEAK: 0.85, FAINT_PEAK: 0.04, OVERSHOOT_PEAK: 1.0},
+    "rtmw3d_x_384x288": {CONFIDENT_PEAK: 1.0, FAINT_PEAK: 0.4, OVERSHOOT_PEAK: 1.0},
 }
 
 #: The exact array each pose model's session must be handed: NCHW, batch of one,
@@ -115,6 +116,7 @@ EXPECTED_BLOB_SHAPE: dict[str, tuple[int, int, int, int]] = {
     "rtmw_m_256x192": (1, 3, 256, 192),
     "dwpose_l_384x288": (1, 3, 384, 288),
     "rtmw_l_384x288": (1, 3, 384, 288),
+    "rtmw3d_x_384x288": (1, 3, 384, 288),
 }
 
 #: A single colour, in OpenCV's (B, G, R) channel order, painted over the whole
@@ -980,3 +982,42 @@ def test_a_keypoint_with_no_peak_lands_on_the_image_origin_not_the_crop_corner(
 
     assert np.all(person.scores == 0.0)
     assert np.all(person.keypoints == 0.0)
+
+
+# ------------------------------------------------------------------------- 3D
+
+
+def test_a_third_output_is_decoded_into_root_relative_3d(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RTMW3D: the same two SimCC heads plus a depth head; ``infer`` fills ``keypoints_3d``."""
+    from alchemypose.core.schema import Space
+
+    pose_key = weights.PRESETS["3d"][1]
+    width, height = weights.REGISTRY[pose_key].input_size
+    x_head, y_head = _simcc_pair(_peaks(), (width, height))
+    # Give the torso some extent — shoulders above hips, each pair side by side —
+    # or there is nothing to set the metric scale from and ``lift`` rightly gives up.
+    for joint, (bx, by) in {5: (width - 40, height - 120), 6: (width + 40, height - 120),
+                            11: (width - 30, height), 12: (width + 30, height)}.items():
+        x_head[0, joint, :] = 0.0
+        y_head[0, joint, :] = 0.0
+        x_head[0, joint, bx] = CONFIDENT_PEAK
+        y_head[0, joint, by] = CONFIDENT_PEAK
+    z_head = np.zeros((1, len(COCO_WHOLEBODY_133), width * 2), dtype=np.float32)
+    z_head[0, :, width] = 1.0                       # every joint at the root's depth
+    engine, _det, _pose = _engine(monkeypatch, "3d", pose_outputs=[x_head, y_head, z_head])
+
+    person = engine.infer(_image(), source="synthetic").frames[0].people[0]
+
+    assert person.keypoints_3d is not None
+    assert person.keypoints_3d.shape == (len(COCO_WHOLEBODY_133), 3)
+    assert person.space_3d is Space.ROOT_REL
+    root = (person.keypoints_3d[11] + person.keypoints_3d[12]) / 2
+    assert np.allclose(root, 0.0, atol=1e-5)
+    assert np.allclose(person.keypoints_3d[[5, 6, 11, 12], 2], 0.0, atol=1e-5)     # all at root depth
+
+
+def test_a_two_head_model_leaves_3d_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine, _det, _pose = _engine(monkeypatch, "performance")
+    person = engine.infer(_image(), source="synthetic").frames[0].people[0]
+    assert person.keypoints_3d is None
+    assert person.space_3d is None

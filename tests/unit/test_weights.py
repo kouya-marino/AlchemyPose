@@ -19,8 +19,14 @@ def test_every_preset_names_registered_models() -> None:
         assert pose_key in weights.REGISTRY, f"{preset}: unknown pose model {pose_key}"
 
 
-def test_the_three_expected_presets_exist() -> None:
-    assert set(weights.PRESETS) == {"lite", "balanced", "performance"}
+def test_the_four_expected_presets_exist() -> None:
+    assert set(weights.PRESETS) == {"lite", "balanced", "performance", "3d"}
+
+
+def test_only_the_3d_preset_loads_a_model_with_a_depth_head() -> None:
+    for preset, (_det, pose) in weights.PRESETS.items():
+        has_depth = weights.REGISTRY[pose].z_range is not None
+        assert has_depth == (preset == "3d"), preset
 
 
 def test_every_registry_entry_is_fully_specified() -> None:

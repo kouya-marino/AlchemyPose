@@ -29,13 +29,14 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from alchemypose.core.schema import Camera, PersonPose, PoseFrame, PoseResult
+from alchemypose.core.lifting import lift
+from alchemypose.core.schema import Camera, PersonPose, PoseFrame, PoseResult, Space
 from alchemypose.core.topology import COCO_WHOLEBODY_133
 from alchemypose.errors import WeightsError
 from alchemypose.inference import weights
 from alchemypose.inference.detector import YoloxDetector
 from alchemypose.inference.session import make_session
-from alchemypose.inference.simcc import affine_untransform, decode_simcc, top_down_affine
+from alchemypose.inference.simcc import affine_untransform, decode_simcc, decode_simcc_depth, top_down_affine
 
 F32 = NDArray[np.float32]
 
@@ -143,7 +144,8 @@ class RTMWEngine:
         for bbox, bbox_score in detections:
             warped, affine = top_down_affine(bbox, self._pose_spec.input_size, image)
             blob = normalise_crop(warped)
-            simcc_x, simcc_y = self._pose.run(None, {self._pose_input: blob})
+            outputs = self._pose.run(None, {self._pose_input: blob})
+            simcc_x, simcc_y = outputs[0], outputs[1]
 
             kp_model, scores = decode_simcc(simcc_x, simcc_y, peak_scale=self._peak_scale)
             kp_image = affine_untransform(kp_model, affine)[0]
@@ -153,12 +155,21 @@ class RTMWEngine:
             # in image space, so "no peak" means the image origin it claims to.
             kp_image[scores[0] <= 0.0] = 0.0
 
+            # RTMW3D: a third head, depth. Same keypoints, same order, plus z —
+            # lifted to a metric, root-relative skeleton (``core.lifting``).
+            keypoints_3d = None
+            if len(outputs) >= 3 and self._pose_spec.z_range is not None:
+                depth = decode_simcc_depth(outputs[2], self._pose_spec.z_range)[0]
+                keypoints_3d = lift(kp_image.astype(np.float32), depth, scores[0].astype(np.float32))
+
             people.append(
                 PersonPose(
                     keypoints=kp_image.astype(np.float32),
                     scores=scores[0].astype(np.float32),
                     bbox=bbox,
                     bbox_score=bbox_score,
+                    keypoints_3d=keypoints_3d,
+                    space_3d=Space.ROOT_REL if keypoints_3d is not None else None,
                 )
             )
 
