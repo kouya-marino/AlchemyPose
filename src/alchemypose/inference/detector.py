@@ -34,8 +34,8 @@ has exactly two outputs:
 
 ``N`` is not "the number of real objects", and it is not a fixed budget
 either: it is ``min(100, rows surviving NMS)``, so it moves with the image —
-``yolox_nano`` returns 39 rows on the two-person fixture, 9 on
-``multipeople.png`` and 1 on zeros. Most of those rows are near-zero-score
+``yolox_nano`` returns 39 rows on the two-person fixture, 9 on a
+seven-person studio photograph and 1 on zeros. Most of those rows are near-zero-score
 padding, dropped by the score threshold rather than treated as detections.
 
 Preprocessing was verified against the graph and against real images: no
