@@ -299,10 +299,9 @@ test rigour is worse than no claim, because it stops anyone checking.
       PyPI does not allow a version to be re-uploaded, so anything wrong in the
       artefact costs a version number.
 - [x] *Done: `assets/screenshot.png`, taken from the window running on Linux,
-      referenced relatively from the README. **Still open for the PyPI page:** a
-      relative path renders on GitHub only, and the repository is private, so the
-      next release needs either a public repo (and an absolute raw URL) or the
-      image left off the PyPI description.* A screenshot of the window with a multi-person image and the skeleton
+      referenced from the README. The repository went public with 3.0.0, and
+      the README now points at absolute raw URLs (tested), so PyPI renders it too;
+      the 1.1.0 and 2.0.0 pages show broken images.* A screenshot of the window with a multi-person image and the skeleton
       visible. This is a portfolio piece and the README is the first thing seen —
       and it is currently a page about a visual tool with no picture on it. A
       screenshot on the PyPI page needs an absolute URL to a publicly reachable

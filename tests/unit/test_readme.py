@@ -70,6 +70,18 @@ def test_the_stated_download_size_matches_the_files_when_they_are_cached() -> No
     assert stated == measured
 
 
+def test_images_use_absolute_urls_so_they_render_on_pypi() -> None:
+    """The README is the PyPI page, and PyPI cannot resolve a path relative to the repository."""
+    images = [
+        target for target in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", README)
+        if not target.startswith("https://img.shields.io/")           # the badges are not ours to host
+    ]
+    assert images, "the README should show the window"
+    for target in images:
+        assert target.startswith("https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/"), target
+        assert (Path(__file__).resolve().parents[2] / target.split("/main/", 1)[1]).exists(), target
+
+
 def test_the_model_family_and_its_licence_are_named() -> None:
     assert "RTMW" in README
     assert "Apache-2.0" in README

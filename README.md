@@ -14,7 +14,7 @@ Drop in a photograph. Every person in it gets 133 keypoints — body, feet, face
 both hands — and you choose what to look at: the whole skeleton, one hand, the left
 leg, the face on its own.
 
-![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](assets/screenshot.png)
+![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/assets/screenshot.png)
 
 > **3.0.0 — photographs, video, webcam and 3D.** `pip install alchemypose`, type
 > `alchemypose`, and the window opens. Every person in the photograph you drop in
@@ -207,7 +207,7 @@ exactly the canvas's rules, so the layer tree, the presets, the person chips and
 confidence slider decide what appears in both, and the person's left is the same
 green. In a video it plays in step with the clip, smoothed like the 2D overlay.
 
-![The window with the 3D preset: the 1935 street photograph on the left, and on the right each person's skeleton in 3D standing on a grid](assets/screenshot-3d.png)
+![The window with the 3D preset: the 1935 street photograph on the left, and on the right each person's skeleton in 3D standing on a grid](https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/assets/screenshot-3d.png)
 
 What the 3D is, precisely: metres, relative to the midpoint of the hips, in the
 camera's axes (x right, y down, z away from the lens). RTMW3D gives the depth in
@@ -369,8 +369,9 @@ vendored in the repository or the wheel.
 | `3d` | YOLOX-s + RTMW3D-x 384×288 | 387 MB | 12 ms¹ | 16 ms¹ |
 
 ¹ The `3d` row was measured on Linux with an RTX 4070 laptop GPU (CUDA), not on the
-M5 like the rows above, so its timings are not comparable with theirs; on that
-machine's CPU the pose model alone is several hundred milliseconds per person.
+M5 like the rows above, so its timings are not comparable with theirs. On that
+machine's CPU provider the same two models take 400 ms (YOLOX-s, per frame) and
+610 ms (RTMW3D-x, per person) — about five minutes for a ten-second, one-person clip.
 
 Sizes are the extracted `.onnx` files as they sit in the cache, in binary megabytes —
 the figures `ls -lh` and `du -h` print — so the three rows add up to the 464 MB all six
