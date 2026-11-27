@@ -43,7 +43,12 @@ def test_the_models_table_marks_the_engines_actual_default() -> None:
 
 
 def test_every_preset_has_a_row_naming_its_pose_model() -> None:
-    labels = {"rtmw_m_256x192": "RTMW-m", "dwpose_l_384x288": "DWPose-l", "rtmw_l_384x288": "RTMW-l"}
+    labels = {
+        "rtmw_m_256x192": "RTMW-m",
+        "dwpose_l_384x288": "DWPose-l",
+        "rtmw_l_384x288": "RTMW-l",
+        "rtmw3d_x_384x288": "RTMW3D-x",
+    }
     for preset, (_det, pose) in weights.PRESETS.items():
         rows = [line for line in README.splitlines() if line.startswith(f"| `{preset}`")]
         assert rows, f"no models-table row for preset {preset!r}"

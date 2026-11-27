@@ -19,6 +19,47 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 
 ## Shipped
 
+### v3 — 3D · 3.0.0 · 2026-11-27
+
+**Status: shipped in 3.0.0.** RTMW3D runs as the `3d` preset, `keypoints_3d` is
+filled with a metric, root-relative skeleton, an orbitable panel shows it beside
+the picture, and glTF exports it. What the plan below got right: the topology
+really is identical, and the layer tree, presets and selection carried over
+untouched. What it did not say: MMPose publishes RTMW3D only as a PyTorch
+checkpoint, so the weights are a pinned third-party ONNX export of it; the depth
+decoding had to be checked against real frames, because rtmlib's differs; and
+the depth alone is not a 3D skeleton — the pixel offsets need a metric scale,
+which `core.lifting` recovers from the torso. `core/h36m.py` still has no caller;
+the G1 retargeting in v4 is where it gets one.
+
+
+**What it is.** RTMW3D in place of RTMW, `keypoints_3d` and `space_3d` populated,
+and an orbitable skeleton beside the image — the same pose, seen from somewhere
+the camera was not.
+
+**Why it exists.** It is the point of choosing this model family.
+
+**Why it is cheap.** RTMW3D emits the **same 133-keypoint topology** with a third
+coordinate. Not a similar skeleton, not a remapping: the same indices, in the same
+order, with a z. So the layer panel, the render groups, the presets, `group_of`,
+the side-colour convention, the selection and solo logic and the confidence
+threshold all carry over unchanged, and the new work is the viewport rather than
+the model of what is being drawn. `keypoints_3d` and `space_3d` are already on
+`PersonPose`, and `Space` already names `CAMERA_M` and `ROOT_REL`. `core/h36m.py`
+ships in v1 with nothing calling it: it maps COCO-WholeBody to H36M-17, synthesising
+pelvis, thorax, spine and head, and every 2D→3D lifting model plugs in at exactly
+that seam. It is 93 lines, most of them the reasoning written down beside
+the constants, and putting it in v1 forced the coordinate conventions to be settled
+while they were free to change: 2D is source-image pixels with the origin top-left
+and y down; 3D will be camera-space, right-handed, metres, OpenCV convention,
+converted to y-up only at glTF export.
+
+`pyqtgraph` and `PyOpenGL` are already declared as the optional `threed` extra.
+Qt3D is deprecated and QtQuick3D and QtGraphs are commercial-or-GPLv3, so neither
+can ever be imported here without relicensing the distributed application.
+
+---
+
 ### v2 — video · 2.0.0 · 2026-11-27
 
 **Status: shipped in 2.0.0.** Video opens, analyses in
@@ -213,34 +254,12 @@ about a visual tool. Nothing is video and nothing is 3D.
 
 ## Planned
 
-### v3 — 3D
+### v4 — the Unitree G1
 
-**What it is.** RTMW3D in place of RTMW, `keypoints_3d` and `space_3d` populated,
-and an orbitable skeleton beside the image — the same pose, seen from somewhere
-the camera was not.
-
-**Why it exists.** It is the point of choosing this model family.
-
-**Why it is cheap.** RTMW3D emits the **same 133-keypoint topology** with a third
-coordinate. Not a similar skeleton, not a remapping: the same indices, in the same
-order, with a z. So the layer panel, the render groups, the presets, `group_of`,
-the side-colour convention, the selection and solo logic and the confidence
-threshold all carry over unchanged, and the new work is the viewport rather than
-the model of what is being drawn. `keypoints_3d` and `space_3d` are already on
-`PersonPose`, and `Space` already names `CAMERA_M` and `ROOT_REL`. `core/h36m.py`
-ships in v1 with nothing calling it: it maps COCO-WholeBody to H36M-17, synthesising
-pelvis, thorax, spine and head, and every 2D→3D lifting model plugs in at exactly
-that seam. It is 93 lines, most of them the reasoning written down beside
-the constants, and putting it in v1 forced the coordinate conventions to be settled
-while they were free to change: 2D is source-image pixels with the origin top-left
-and y down; 3D will be camera-space, right-handed, metres, OpenCV convention,
-converted to y-up only at glTF export.
-
-`pyqtgraph` and `PyOpenGL` are already declared as the optional `threed` extra.
-Qt3D is deprecated and QtQuick3D and QtGraphs are commercial-or-GPLv3, so neither
-can ever be imported here without relicensing the distributed application.
-
----
+The same motion on Unitree's 29-joint G1 humanoid (`g1_29dof_rev_1_0.urdf` from
+`unitree_ros`, BSD-3), beside the clip and its 3D skeleton, and then a robot-motion
+export — root pose, 29 joint angles, velocities, foot contacts — in a layout
+MuJoCo and Isaac Lab trainers load, so a policy can be trained to perform it.
 
 ## Decisions that shaped v1
 

@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![PyPI](https://img.shields.io/badge/PyPI-v2.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![PyPI](https://img.shields.io/badge/PyPI-v3.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
 [![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -16,7 +16,7 @@ leg, the face on its own.
 
 ![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](assets/screenshot.png)
 
-> **2.0.0 — photographs, video and webcam.** `pip install alchemypose`, type
+> **3.0.0 — photographs, video, webcam and 3D.** `pip install alchemypose`, type
 > `alchemypose`, and the window opens. Every person in the photograph you drop in
 > comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
 > chips and a confidence slider. The face resolves from contours to individual points
@@ -24,7 +24,9 @@ leg, the face on its own.
 > the overlay as a PNG. Open a clip instead and every frame is analysed once in the
 > background, each person tracked through it, while it already plays and scrubs; or
 > switch on the webcam for live pose — see [Video and webcam](#video-and-webcam). The
-> CLI produces the same results with no window at all. 3D is next — see
+> CLI produces the same results with no window at all. Pick the **3D** preset and
+> every keypoint gains a depth, shown as an orbitable skeleton beside the picture and
+> exportable as animated glTF — see [In 3D](#in-3d). The Unitree G1 is next — see
 > [Roadmap](#roadmap).
 
 ---
@@ -50,7 +52,7 @@ alchemypose
 ```
 
 The second line opens the window: `alchemypose` on its own is the application.
-`alchemypose --version` prints `2.0.0`, and the subcommands further down do the same
+`alchemypose --version` prints `3.0.0`, and the subcommands further down do the same
 work with no window at all.
 
 From source instead, if you have access to the repository:
@@ -195,6 +197,45 @@ Frame-accurate seeking uses PyAV, the `video` extra (`pip install
 files and seeks as accurately as the container's index allows, which is exact for
 playing through and approximate for jumping around.
 
+### In 3D
+
+Pick **3D** in the toolbar's preset box and every person also gets a depth for each
+of the 133 keypoints, from RTMW3D — the same keypoints in the same order, plus z. A
+3D panel opens between the picture and the controls: an orbitable skeleton (drag to
+orbit, middle-drag to pan, wheel to zoom) standing on a floor grid, drawn under
+exactly the canvas's rules, so the layer tree, the presets, the person chips and the
+confidence slider decide what appears in both, and the person's left is the same
+green. In a video it plays in step with the clip, smoothed like the 2D overlay.
+
+![The window with the 3D preset: the 1935 street photograph on the left, and on the right each person's skeleton in 3D standing on a grid](assets/screenshot-3d.png)
+
+What the 3D is, precisely: metres, relative to the midpoint of the hips, in the
+camera's axes (x right, y down, z away from the lens). RTMW3D gives the depth in
+metres directly; the pixel offsets become metres by assuming a 0.5 m shoulder-to-hip
+length and solving for the scale with the torso's own depth extent, so a body leaning
+at the camera is not mistaken for a distant one. That makes every person adult-sized —
+the far pedestrian above is as tall as the two women — and it makes the *directions*
+of the bones trustworthy, which is what anything downstream needs. Where a person
+stands in the world, and how far they travel, a single camera does not say, and this
+does not guess.
+
+On the reference dance clip the lifted skeleton holds up: left and right limbs agree
+to a millimetre on median (upper arms 0.284 m and 0.283 m, thighs 0.416 m each),
+forearm 0.25 m, shin 0.41 m, nose to ankle 1.51 m, and a bone's length varies 5–23%
+from frame to frame.
+
+**Export → 3D motion as glTF** writes the chosen person (or person 1) as an animated
+`.glb`: a node per keypoint, named, with its motion sampled at the clip's timestamps,
+and the bones as a line mesh skinned to those nodes, so it plays back as a skeleton in
+Blender or any glTF viewer. glTF is y-up, so the axes are converted at that boundary
+and nowhere else. The reference clip's file passes the Khronos glTF validator with no
+errors and no warnings. From the shell: `alchemypose video clip.mp4 --preset 3d --gltf
+clip.glb`.
+
+The 3D view uses pyqtgraph over PyOpenGL — the `threed` extra, `pip install
+"alchemypose[threed]"`. Without it, or on a machine with no display, the panel says so
+instead of drawing.
+
 ### On an NVIDIA GPU
 
 Video is where speed matters: the analysis runs the models once per frame. ONNX
@@ -202,9 +243,15 @@ Runtime's CUDA build is used automatically when it is installed in place of the
 default one:
 
 ```bash
-pip uninstall onnxruntime
+pip uninstall -y onnxruntime onnxruntime-gpu
 pip install "onnxruntime-gpu[cuda,cudnn]"
 ```
+
+Run both lines again after any `pip install -U alchemypose`. The two builds install
+the same `onnxruntime` package, and upgrading AlchemyPose reinstalls the CPU one,
+which then shadows the GPU build: CUDA disappears and everything quietly runs on the
+CPU. AlchemyPose logs a warning naming this fix when it sees both installed and no
+CUDA.
 
 Both the detector and the pose model then run on the GPU, each proved by one
 throwaway inference first and demoted to the CPU if that fails. Measured on an RTX
@@ -319,6 +366,11 @@ vendored in the repository or the wheel.
 | `lite` | YOLOX-nano + RTMW-m 256×192 | 63 MB | 8 ms | 4 ms |
 | `balanced` | YOLOX-tiny + DWPose-l 384×288 | 148 MB | 15 ms | 14 ms |
 | `performance` *(default)* | YOLOX-s + RTMW-l 384×288 | 253 MB | 42 ms | 25 ms |
+| `3d` | YOLOX-s + RTMW3D-x 384×288 | 387 MB | 12 ms¹ | 16 ms¹ |
+
+¹ The `3d` row was measured on Linux with an RTX 4070 laptop GPU (CUDA), not on the
+M5 like the rows above, so its timings are not comparable with theirs; on that
+machine's CPU the pose model alone is several hundred milliseconds per person.
 
 Sizes are the extracted `.onnx` files as they sit in the cache, in binary megabytes —
 the figures `ls -lh` and `du -h` print — so the three rows add up to the 464 MB all six
@@ -349,7 +401,7 @@ Layers, with the Qt boundary enforced by a test:
 
 ```
 core/        topology · schema · presets · serialization · H36M mapping ·
-             tracking · smoothing
+             tracking · smoothing · metric 3D lifting · glTF
              no Qt, no onnxruntime — pure data, testable anywhere
 
 media/       reading an image as upright BGR, EXIF applied · reading a video
@@ -360,7 +412,8 @@ inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache 
              no Qt, so it is testable headless
 
 gui/         PySide6: canvas · layer tree · preset and person chips ·
-             confidence slider · inspector · transport · video and webcam modes
+             confidence slider · inspector · transport · video and webcam modes ·
+             the 3D panel (pyqtgraph; its geometry is built without OpenGL)
 ```
 
 `import alchemypose` pulls in no Qt at all — the application class resolves lazily —
@@ -409,8 +462,15 @@ result by `frame_index` and never waits on a model.
 - [x] `alchemypose video` on the command line
 - [x] CUDA, when `onnxruntime-gpu` is installed
 
-**v3 — 3D.** RTMW3D emits the same 133-keypoint topology with a third coordinate, so
-the layer panel and presets carry over unchanged; the new work is the viewport.
+**v3 — 3D.** Shipped in 3.0.0.
+
+- [x] RTMW3D as the `3d` preset: the same 133 keypoints plus a depth head
+- [x] `keypoints_3d` populated: metric, root-relative, OpenCV axes
+- [x] The orbitable 3D panel, on the `threed` extra (never QtQuick3D or QtGraphs)
+- [x] Animated, skinned glTF export, y-up at the boundary only
+
+**v4 — the Unitree G1.** The same motion on the 29-joint G1 humanoid, beside the clip
+and its 3D skeleton; then a robot-motion export to train a policy from.
 
 ---
 
@@ -426,12 +486,12 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At the time of writing that is 607 tests. On a machine with the weights cached they
+At the time of writing that is 649 tests. On a machine with the weights cached they
 all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
-605 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+647 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
 `tests/integration` — and check the cache rather than downloading anything, and one
 README test compares the stated download size against the cached files, so without
-weights the same Linux run reports 594 passed and 13 skipped. The video tests encode
+weights the same Linux run reports 636 passed and 13 skipped. The video tests encode
 their own clips with PyAV (a `dev` dependency) and never touch a file on disk beyond
 `tmp_path`. `main.py` sits outside `src/`, so neither
 `ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
