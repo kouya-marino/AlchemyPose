@@ -14,6 +14,8 @@ Drop in a photograph. Every person in it gets 133 keypoints — body, feet, face
 both hands — and you choose what to look at: the whole skeleton, one hand, the left
 leg, the face on its own.
 
+![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](assets/screenshot.png)
+
 > **1.0.0 — single images.** `pip install alchemypose`, type `alchemypose`, and the
 > window opens. Every person in the photograph you drop in comes back with 133
 > keypoints on a zoomable canvas, driven by a layer tree, preset chips and a
@@ -220,8 +222,8 @@ preset produced it. That took work: the RTMPose-family graphs end in a bare `Mat
 the model's training temperature. Measured on real output, a confident peak reaches
 about 1.0 on RTMW-m and DWPose-l but an order of magnitude more on RTMW-l — 8.576 was
 the highest of the fixture's 399 — which made a fixed 0..1 threshold meaningless
-across presets and inert on the default one. `rtmw.PEAK_SCALE` records the divisor per
-model, 1.0 for the first two and 10.0 for RTMW-l, and decoding divides it out and
+across presets and inert on the default one. Each pose model's `ModelSpec.peak_scale`
+records the divisor, 1.0 for the first two and 10.0 for RTMW-l, and decoding divides it out and
 clips to [0, 1]. It is a monotone confidence, not a calibrated probability — nothing
 in the training objective makes it one.
 
@@ -337,12 +339,20 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At 1.0.0 that is 511 tests, all passing, on a machine with the weights cached. Twelve
-of them are marked `models` — two in `tests/unit`, ten in `tests/integration` — and
-check the cache rather than downloading anything, so without weights the same run
-reports 499 passed and 12 skipped. `main.py` sits outside `src/`, so neither
+At the time of writing that is 530 tests. On a machine with the weights cached they
+all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
+528 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+`tests/integration` — and check the cache rather than downloading anything, and one
+README test compares the stated download size against the cached files, so without
+weights the same Linux run reports 517 passed and 13 skipped. `main.py` sits outside `src/`, so neither
 `ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
 appears twice above.
+
+**`ruff format` is deliberately not used.** The project gates on `ruff check`, and the
+formatter would collapse the column-aligned trailing comments the code relies on to
+read as tables — the `Space` members, the `PersonPose` fields, the detector's test
+rows — into single-space comments. That alignment is doing work, so the formatter is
+not, and CI does not run it.
 
 The GUI tests need a Qt platform plugin, not a display: `offscreen` renders into a
 buffer, so there is no xvfb anywhere in this project. They do not need that variable
