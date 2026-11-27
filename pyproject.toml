@@ -72,7 +72,11 @@ Issues = "https://github.com/kouya-marino/AlchemyPose/issues"
 Changelog = "https://github.com/kouya-marino/AlchemyPose/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-qt>=4.4", "ruff>=0.6", "mypy>=1.11", "build>=1.0", "twine>=5.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-qt>=4.4", "ruff>=0.6", "mypy>=1.11", "build>=1.0", "twine>=5.0", "av>=14"]
+# Frame-accurate seeking. Without it, video falls back to OpenCV, which is
+# already a base dependency and reads every format FFmpeg does, but seeks only
+# as accurately as the container's index.
+video = ["av>=14"]
 threed = ["pyqtgraph>=0.13", "PyOpenGL>=3.1"]
 
 [project.scripts]
