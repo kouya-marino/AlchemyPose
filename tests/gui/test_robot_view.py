@@ -82,3 +82,25 @@ def test_a_finished_motion_poses_the_robot_and_reports_its_speed(qtbot, reporter
     assert "too fast" in window.status
     assert window.transport.speed < 1.0, "a slower playback rate is suggested"
     assert window.robot_view.last_pose is not None
+
+
+def test_g1_export_needs_a_motion_and_then_writes_a_reference(qtbot, reporter, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from alchemypose.gui.main_window import MainWindow
+    from alchemypose.robot import export
+    from alchemypose.robot.retarget import Retargeter, RobotMotion
+
+    window = MainWindow(reporter=reporter, engine_factory=lambda: None)  # type: ignore[arg-type,return-value]
+    qtbot.addWidget(window)
+    assert window._export_writer("g1.npz") is None
+    count = 10
+    q = np.zeros((count, 29))
+    retargeter = Retargeter(G1)
+    window.robot.robot = G1
+    window.robot.motion = RobotMotion(
+        G1.joint_names, np.arange(count) / 30.0, q, np.tile(np.eye(3), (count, 1, 1)),
+        np.full(count, retargeter.sole_height(q[0], np.eye(3))), np.ones(count, dtype=bool), np.zeros(count), np.eye(3),
+    )
+    window._export_writer("g1.npz")(tmp_path / "m.npz")
+    window._export_writer("g1.csv")(tmp_path / "m.csv")
+    assert export.load_npz(tmp_path / "m.npz").frames == count
+    assert np.loadtxt(tmp_path / "m.csv", delimiter=",").shape == (count, 36)

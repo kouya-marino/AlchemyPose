@@ -414,6 +414,93 @@ def video(
     _write_gltf(result, gltf_out)
 
 
+@app.command()
+def retarget(
+    path: Path = typer.Argument(..., help="Video to put on the Unitree G1."),
+    npz_out: Path | None = typer.Option(None, "--npz", help="Write the reference motion as .npz (named arrays)."),
+    csv_out: Path | None = typer.Option(None, "--csv", help="Also write Unitree's 36-column CSV (quaternion xyzw)."),
+    track: int = typer.Option(0, help="Which tracked person: 0 is whoever is on screen longest."),
+    root: str = typer.Option("fixed", help="Root travel: fixed (none) or planted (estimated from the stance foot)."),
+    slow: str = typer.Option("auto", help="Slow-down factor, or 'auto' to fit the motors' speed budget."),
+    budget: float = typer.Option(0.5, min=0.05, max=1.0, help="Share of each motor's rated speed a motion may use."),
+    run_check: bool = typer.Option(
+        False, "--check", help="Play the result through Unitree's MuJoCo model (sim extra)."
+    ),
+    use_cache: bool = typer.Option(True, "--cache/--no-cache", help="Reuse an earlier 3D analysis of the same file."),
+) -> None:
+    """Retarget a video onto the Unitree G1 and write reference motion to train a policy from.
+
+    Kinematic reference only: for training and simulation, never for playing
+    straight onto a robot.
+    """
+    if not path.exists():
+        raise _fail(f"{path} not found.")
+    if root not in ("fixed", "planted"):
+        raise _fail("--root must be fixed or planted.")
+    try:
+        slowdown: float | str = "auto" if slow == "auto" else float(slow)
+    except ValueError:
+        raise _fail("--slow must be a number of at least 1, or auto.") from None
+    if not isinstance(slowdown, str) and slowdown < 1.0:
+        raise _fail("--slow must be at least 1 (it slows the motion down).")
+    if npz_out is None and csv_out is None:
+        raise _fail("nothing to write: give --npz and/or --csv.")
+    npz_out = _checked_output(npz_out, "--npz")
+    csv_out = _checked_output(csv_out, "--csv")
+
+    import numpy as np
+
+    from alchemypose.core.smoothing import smooth_frames
+    from alchemypose.inference.rtmw import RTMWEngine
+    from alchemypose.inference.video import cached_analysis
+    from alchemypose.media.video import open_video
+    from alchemypose.robot import assets, export
+    from alchemypose.robot.retarget import Retargeter
+    from alchemypose.robot.urdf import load_urdf
+
+    try:
+        reader = open_video(path)
+        try:
+            _fetch_weights("3d")
+            result, _cached = cached_analysis(
+                path, lambda: RTMWEngine(preset="3d"), reader, preset="3d", use_cache=use_cache
+            )
+            fps = reader.info.fps
+        finally:
+            reader.close()
+        robot_dir = assets.ensure_g1()
+        robot = load_urdf(robot_dir / assets.URDF)
+        retargeter = Retargeter(robot)
+        motion = retargeter.retarget(smooth_frames(result.frames, fps), track_id=track)
+        reference = export.build_reference(
+            motion, retargeter, root=root, slowdown=slowdown, budget=budget, source=str(path)  # type: ignore[arg-type]
+        )
+    except (AlchemyPoseError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+
+    meta = reference.metadata
+    miss = float(np.nanmedian(reference.error)) * 100
+    typer.echo(
+        f"{reference.frames} frames at {reference.fps:g} fps · median miss {miss:.1f} cm · "
+        f"peak {meta['peak_speed_fraction']:.0%} of {meta['peak_speed_joint']} speed · "
+        f"slowed {meta['slowdown']:.2f}x · root {root}",
+        err=True,
+    )
+    if npz_out is not None:
+        export.save_npz(reference, npz_out)
+        typer.echo(f"Wrote {npz_out}")
+    if csv_out is not None:
+        csv_out.write_text(export.unitree_csv(reference))
+        typer.echo(f"Wrote {csv_out}")
+        typer.echo(f"BeyondMimic: {export.beyondmimic_hint(csv_out, reference)}", err=True)
+    if run_check:
+        try:
+            from alchemypose.robot.simcheck import check
+        except ImportError:
+            raise _fail('--check needs MuJoCo: pip install "alchemypose[sim]"') from None
+        typer.echo(check(reference, robot_dir / assets.MJCF, robot).summary(), err=True)
+
+
 def _checked_gltf_preset(gltf_out: Path | None, preset: str) -> None:
     """Refuse ``--gltf`` up front on a preset with no depth head, before minutes of inference."""
     if gltf_out is not None and weights.REGISTRY[weights.PRESETS[preset][1]].z_range is None:

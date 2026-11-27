@@ -60,6 +60,8 @@ EXPORT_KINDS: tuple[tuple[str, str, str], ...] = (
     ("Keypoints as CSV…", "csv", "CSV (*.csv)"),
     ("Overlay as PNG…", "png", "PNG image (*.png)"),
     ("3D motion as glTF…", "glb", "glTF binary (*.glb)"),
+    ("G1 motion (.npz)…", "g1.npz", "G1 reference motion (*.npz)"),
+    ("G1 motion as Unitree CSV…", "g1.csv", "CSV (*.csv)"),
 )
 
 
@@ -608,6 +610,9 @@ class MainWindow(QMainWindow):
         """
         from alchemypose.gui.export import export_csv, export_glb, export_json, export_png
 
+        if suffix in ("g1.npz", "g1.csv"):
+            return self._g1_writer(suffix)
+
         if suffix == "png":
             if self.canvas.image_item is None:
                 return None
@@ -627,6 +632,25 @@ class MainWindow(QMainWindow):
         if suffix == "json":
             return lambda path: export_json(result, path)
         return lambda path: export_csv(result, path)
+
+    def _g1_writer(self, suffix: str) -> Callable[[Path], None] | None:
+        """Reference motion for training, from the G1 retarget on screen (fixed root, auto slow-down)."""
+        motion, robot = self.robot.motion, self.robot.robot
+        if motion is None or robot is None:
+            return None
+        from alchemypose.robot import export
+        from alchemypose.robot.retarget import Retargeter
+
+        source = self._pending_source or ""
+
+        def write(path: Path) -> None:
+            reference = export.build_reference(motion, Retargeter(robot), root="fixed", slowdown="auto", source=source)
+            if suffix == "g1.npz":
+                export.save_npz(reference, path)
+            else:
+                path.write_text(export.unitree_csv(reference))
+
+        return write
 
     def _export_stem(self) -> str:
         """Name the file after the photograph it came from, when there is one."""
