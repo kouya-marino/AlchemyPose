@@ -14,6 +14,12 @@ models/
 # repository: under APPI (Japan) and GDPR they are personal data, and a pose
 # estimator's test material is full of them.
 _local/
+# Reference videos downloaded for testing: third-party footage of identifiable
+# people, so the same rule applies. Open them from disk; never commit them.
+test-data/*.mp4
+test-data/*.mov
+test-data/*.webm
+test-data/*.mkv
 *.npy
 *.npz
 
