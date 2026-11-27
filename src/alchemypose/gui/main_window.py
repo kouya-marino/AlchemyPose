@@ -406,6 +406,7 @@ class MainWindow(QMainWindow):
         self.people.set_people(count)
         self.canvas_overlay.set_result(result, self._effective_selection(), self._confidence_threshold)
         if count:
+            self.canvas_overlay.animate_in()
             noun = "person" if count == 1 else "people"
             self.set_status(f"{count} {noun} · {len(result.topology)} keypoints · {result.model}")
         else:

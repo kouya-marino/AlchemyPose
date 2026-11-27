@@ -52,6 +52,14 @@ class PoseCanvas(QGraphicsView):
     #: treat it as the complete record of the view's scale.
     zoom_changed = Signal(float)
 
+    #: Emitted at the very start of every mouse press, before it is hit-tested.
+    #:
+    #: Qt leaves fully transparent items out of ``itemAt``, so a joint that is
+    #: still at opacity 0 in the draw-in animation cannot be clicked. The
+    #: overlay listens and finishes the animation on the spot; the connection is
+    #: direct, so the joints are opaque again by the time the click resolves.
+    pressed = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self._scene = QGraphicsScene(self)
@@ -138,6 +146,7 @@ class PoseCanvas(QGraphicsView):
     # -------------------------------------------------------------------- pan
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.pressed.emit()
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning_from = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -148,6 +157,7 @@ class PoseCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        self.pressed.emit()          # a double-click is a press too; see ``pressed``
         if event.button() == Qt.MouseButton.LeftButton:
             self._emit_keypoint_signal(event, self.keypoint_double_clicked)
         super().mouseDoubleClickEvent(event)

@@ -52,6 +52,7 @@ class SelectionController:
         """Fade every other group. Nothing is hidden, nothing is remembered."""
         self._emphasised = group
         self._overlay.set_emphasis(group)
+        self._overlay.set_image_dimmed(True)
 
     def solo_group(self, group: str) -> None:
         """Hide everything else, remembering what to come back to.
@@ -67,6 +68,7 @@ class SelectionController:
         self._emphasised = group
         self._layers.set_selection(KeypointSelection(visible=frozenset(RENDER_GROUPS[group])))
         self._overlay.set_emphasis(None)
+        self._overlay.set_image_dimmed(True)
 
     def clear(self) -> None:
         """Esc / Alt+H: drop the emphasis and undo any solo."""
@@ -76,3 +78,4 @@ class SelectionController:
         self._soloed = None
         self._emphasised = None
         self._overlay.set_emphasis(None)
+        self._overlay.set_image_dimmed(False)
