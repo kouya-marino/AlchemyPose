@@ -190,10 +190,11 @@ def test_writing_a_png_into_a_missing_folder_is_an_error_not_a_traceback(qtbot, 
 # ----------------------------------------------------------------- the menu
 
 
-def test_the_menu_offers_the_three_formats(qtbot, reporter) -> None:  # type: ignore[no-untyped-def]
+def test_the_menu_offers_the_four_formats(qtbot, reporter) -> None:  # type: ignore[no-untyped-def]
     window = _window(qtbot, reporter, FixedSavePrompt())
-    assert list(window.export_actions) == ["json", "csv", "png"]
+    assert list(window.export_actions) == ["json", "csv", "png", "glb"]
     assert "JSON" in window.export_actions["json"].text()
+    assert "glTF" in window.export_actions["glb"].text()
 
 
 @pytest.mark.parametrize("suffix", ["json", "csv", "png"])
