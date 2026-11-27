@@ -190,7 +190,9 @@ class MainWindow(QMainWindow):
         from alchemypose.gui.panels.layers import LayerPanel
         from alchemypose.gui.panels.presets import PresetBar
         from alchemypose.gui.panels.transport import TransportBar
+        from alchemypose.gui.robot import RobotController
         from alchemypose.gui.video import VideoController
+        from alchemypose.gui.view3d.robot import RobotView
         from alchemypose.gui.view3d.widget import Skeleton3DView
 
         self._result: PoseResult | None = None
@@ -235,10 +237,16 @@ class MainWindow(QMainWindow):
         self.view3d = Skeleton3DView()
         self.view3d.setMinimumWidth(320)
         self.view3d.hide()
+        # The Unitree G1, posed from the same motion. Shown by the G1 toolbar toggle.
+        self.robot_view = RobotView()
+        self.robot_view.setMinimumWidth(300)
+        self.robot_view.hide()
+        self.robot = RobotController(parent=self)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(stage)
         splitter.addWidget(self.view3d)
+        splitter.addWidget(self.robot_view)
         splitter.addWidget(side)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -297,6 +305,11 @@ class MainWindow(QMainWindow):
         self._live_first_frame = False
         self.live.frame_ready.connect(self._on_live_frame)
         self.live.failed.connect(self._on_live_failed)
+        self.robot.model_ready.connect(self._on_robot_model)
+        self.robot.progress.connect(self._on_robot_progress)
+        self.robot.motion_ready.connect(self._on_robot_motion)
+        self.robot.failed.connect(self._on_robot_failed)
+        self.transport.speed_changed.connect(self.video.set_speed)
         QShortcut(QKeySequence("Space"), self, self._toggle_play)
         QShortcut(QKeySequence("Right"), self, lambda: self._step(1))
         QShortcut(QKeySequence("Left"), self, lambda: self._step(-1))
@@ -322,6 +335,14 @@ class MainWindow(QMainWindow):
         self.webcam_action.setToolTip("Live pose from the default camera")
         self.webcam_action.toggled.connect(self._on_webcam_toggled)
         toolbar.addAction(self.webcam_action)
+
+        self.robot_action = QAction("G1", self)
+        self.robot_action.setCheckable(True)
+        self.robot_action.setToolTip(
+            "Show the motion on a Unitree G1 (29 joints). Needs the 3D preset; kinematic only."
+        )
+        self.robot_action.toggled.connect(self._on_robot_toggled)
+        toolbar.addAction(self.robot_action)
         toolbar.addSeparator()
 
         self.preset_box = QComboBox()
@@ -439,7 +460,7 @@ class MainWindow(QMainWindow):
         afterwards, on the next turn of the event loop, once the splitter has
         actually resized it.
         """
-        visible_3d = [w for w in (self.view3d, getattr(self, "robot_view", None)) if w is not None and w.isVisible()]
+        visible_3d = [w for w in (self.view3d, self.robot_view) if w.isVisibleTo(self)]
         total = max(self.splitter.width(), 1)
         side = 280
         if visible_3d:
@@ -456,6 +477,89 @@ class MainWindow(QMainWindow):
         """The optional panels between the picture and the controls, in splitter order."""
         panels = (self.splitter.widget(i) for i in range(1, self.splitter.count() - 1))
         return [panel for panel in panels if panel is not None]
+
+    # ------------------------------------------------------------------- G1
+
+    def _on_robot_toggled(self, on: bool) -> None:
+        """Show the G1 and put the current motion on it; it needs 3D keypoints, so switch to 3D."""
+        if not on:
+            self.robot.cancel()
+            self.robot_view.hide()
+            self._share_width()
+            return
+        self.robot_view.show()
+        self._share_width()
+        if self._preset != "3d":
+            self.set_status("The G1 needs 3D keypoints — switching to the 3D preset.")
+            self.set_preset("3d")
+        self.robot_view.show_message("Loading the Unitree G1 ...")
+        self.robot.load_model()
+
+    def _on_robot_model(self, robot: object, meshes: object) -> None:
+        if not self.robot_view.loaded:
+            self.robot_view.load(robot, meshes)  # type: ignore[arg-type]
+        self._retarget_current()
+
+    def _robot_track(self) -> int:
+        return 0 if self._person is None else self._person
+
+    def _retarget_current(self) -> None:
+        """Retarget whatever is on screen: the whole clip, or the one still."""
+        if not self.robot_action.isChecked() or self.robot.robot is None:
+            return
+        if self.video.is_open:
+            result = self.video.result
+            if result is None:
+                self.set_status("G1: waiting for the clip's analysis ...")
+                return
+            if not any(p.keypoints_3d is not None for f in result.frames for p in f.people):
+                self.robot_view.show_message("This clip was analysed without depth. Re-open it with the 3D preset.")
+                return
+            frames = self.video.smoothed_frames or result.frames
+            self.robot.retarget(frames, self._robot_track())
+        elif self._result is not None:
+            from dataclasses import replace
+
+            frame = self._result.frames[0]
+            tracked = replace(frame, people=tuple(replace(p, track_id=i) for i, p in enumerate(frame.people)))
+            if any(p.keypoints_3d is not None for p in tracked.people):
+                self.robot.retarget((tracked,), self._robot_track())
+
+    def _on_robot_progress(self, done: int, total: int) -> None:
+        self.set_status(f"Retargeting to the G1 · {done}/{total} frames ...")
+
+    def _on_robot_motion(self, motion: object, report: object) -> None:
+        from alchemypose.robot.retarget import RobotMotion, SpeedReport
+
+        assert isinstance(motion, RobotMotion) and isinstance(report, SpeedReport)
+        import numpy as np
+
+        error_cm = float(np.nanmedian(motion.error)) * 100 if motion.valid.any() else float("nan")
+        if len(motion.q) == 1:
+            self.set_status(f"G1 · posed from person {motion.track_id + 1} · miss {error_cm:.1f} cm")
+            self._pose_robot(0)
+            return
+        if report.slowdown > 1.0:
+            pace = f"too fast for the G1 — play at {1 / report.slowdown:.2f}× to stay within {report.budget:.0%}"
+        else:
+            pace = "within the G1's speed"
+        self.set_status(
+            f"G1 · {len(motion.q)} frames · median miss {error_cm:.1f} cm · peak {report.worst_fraction:.0%} of "
+            f"{report.worst_joint.replace('_joint', '').replace('_', ' ')} motor speed · {pace}"
+        )
+        self.transport.suggest_speed(1.0 / report.slowdown if report.slowdown > 1.0 else 1.0)
+        self._pose_robot(self.video.index if self.video.is_open else 0)
+
+    def _on_robot_failed(self, message: str) -> None:
+        self.robot_view.show_message(message)
+        self.set_status("G1 unavailable.")
+
+    def _pose_robot(self, index: int) -> None:
+        if not self.robot_action.isChecked():
+            return
+        pose = self.robot.pose(index)
+        if pose is not None:
+            self.robot_view.set_pose(*pose)
 
     # ------------------------------------------------------------------ export
 
@@ -650,6 +754,7 @@ class MainWindow(QMainWindow):
     def open_video(self, path: Path) -> None:
         """Show frame 0 at once, analyse every frame in the background, play meanwhile."""
         self._leave_live()
+        self.robot.cancel()
         self._result = None
         self._person = None
         self._pending_source = str(path)
@@ -686,6 +791,7 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.replace_image(image)
         self.transport.show_position(index)
+        self._pose_robot(index)
         if isinstance(view, PoseResult):
             self._result = view
             self.canvas_overlay.set_result(view, self._effective_selection(), self._confidence_threshold)
@@ -709,6 +815,7 @@ class MainWindow(QMainWindow):
         noun = "person" if tracks == 1 else "people"
         how = " (from cache)" if cached else ""
         self.set_status(f"{len(result.frames)} frames · {tracks} {noun} tracked · {result.model}{how}")
+        self._retarget_current()
 
     def _on_video_failed(self, message: str) -> None:
         self.reporter.error("Video analysis failed", message)
@@ -748,6 +855,7 @@ class MainWindow(QMainWindow):
         self.people.set_people(count)
         self.canvas_overlay.set_result(result, self._effective_selection(), self._confidence_threshold)
         self._refresh_3d()
+        self._retarget_current()
         if count:
             self.canvas_overlay.animate_in()
             noun = "person" if count == 1 else "people"
@@ -816,11 +924,13 @@ class MainWindow(QMainWindow):
     def _on_person_chosen(self, index: int) -> None:
         self._person = index
         self._push_selection()
+        self._retarget_current()
         self.set_status(f"Person {index + 1}")
 
     def _on_everyone_chosen(self) -> None:
         self._person = None
         self._push_selection()
+        self._retarget_current()
 
     def _on_keypoint_clicked(self, person: int, index: int, group: str) -> None:
         """Click selects: emphasise the group, hide nothing."""

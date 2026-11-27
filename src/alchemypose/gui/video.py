@@ -103,6 +103,7 @@ class VideoController(QObject):
         #: Wall-clock anchor for playback: (monotonic seconds, frame index) at play().
         self._clock: tuple[float, int] = (0.0, 0)
         self.frames_skipped = 0
+        self._speed = 1.0
 
         self._frame_analysed.connect(self._on_frame_analysed)
         self._finished.connect(self._on_finished)
@@ -227,6 +228,15 @@ class VideoController(QObject):
             self._timer.stop()
             self.playing_changed.emit(False)
 
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def set_speed(self, speed: float) -> None:
+        """Play at ``speed`` times real time; re-anchors the clock so the playhead does not jump."""
+        self._speed = max(0.05, float(speed))
+        self._clock = (time.monotonic(), self._index)
+
     def set_smoothing(self, enabled: bool) -> None:
         self._smoothing = enabled
         if self._reader is not None:
@@ -238,7 +248,7 @@ class VideoController(QObject):
             self.pause()
             return
         started_at, started_index = self._clock
-        due = started_index + int((time.monotonic() - started_at) * info.fps)
+        due = started_index + int((time.monotonic() - started_at) * info.fps * self._speed)
         if due >= info.frame_count:
             self.show(info.frame_count - 1)
             self.pause()

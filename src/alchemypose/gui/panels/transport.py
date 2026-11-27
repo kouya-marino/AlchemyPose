@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
 
 from alchemypose.gui import theme
 
@@ -26,6 +26,11 @@ class TransportBar(QWidget):
     position_changed = Signal(int)
     play_toggled = Signal(bool)
     smoothing_toggled = Signal(bool)
+    speed_changed = Signal(float)
+
+    #: Playback rates offered. Slower ones are for checking a move the robot
+    #: cannot make at full speed.
+    SPEEDS: tuple[float, ...] = (1.0, 0.75, 0.5, 0.25)
 
     def __init__(self) -> None:
         super().__init__()
@@ -54,12 +59,21 @@ class TransportBar(QWidget):
         self.smooth_box.setToolTip("Steady the skeleton between frames (display only; exports stay raw)")
         self.smooth_box.toggled.connect(self.smoothing_toggled.emit)
 
+        self.speed_box = QComboBox()
+        for speed in self.SPEEDS:
+            self.speed_box.addItem(f"{speed:g}×", speed)
+        self.speed_box.setToolTip("Playback speed")
+        self.speed_box.currentIndexChanged.connect(
+            lambda _i: self.speed_changed.emit(float(self.speed_box.currentData()))
+        )
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.addWidget(self.play_button)
         layout.addWidget(self.slider, stretch=1)
         layout.addWidget(self.time_label)
         layout.addWidget(self.analysis_label)
+        layout.addWidget(self.speed_box)
         layout.addWidget(self.smooth_box)
 
     def configure(self, frame_count: int, fps: float) -> None:
@@ -104,6 +118,17 @@ class TransportBar(QWidget):
     @property
     def playing(self) -> bool:
         return bool(self.play_button.isChecked())
+
+    @property
+    def speed(self) -> float:
+        return float(self.speed_box.currentData())
+
+    def suggest_speed(self, fraction: float) -> None:
+        """Pick the fastest offered rate at or below ``fraction`` (1.0 leaves the choice alone)."""
+        if fraction >= 1.0:
+            return
+        fitting = [s for s in self.SPEEDS if s <= fraction] or [self.SPEEDS[-1]]
+        self.speed_box.setCurrentIndex(self.SPEEDS.index(max(fitting)))
 
     def set_analysis_progress(self, done: int, total: int) -> None:
         self.analysis_label.setText("" if done >= total else f"analysing {done}/{total}")

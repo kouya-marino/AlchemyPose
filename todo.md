@@ -351,14 +351,23 @@ test rigour is worse than no claim, because it stops anyone checking.
       commercial-or-GPLv3 with no LGPL option, and importing either relicenses the
       distributed application.
 - [x] glTF export, converting to y-up at the boundary and nowhere else.
-- [ ] `core/h36m.py` finally gets a caller. *Moved to v4: the G1 retargeting.*
+- [ ] `core/h36m.py` finally gets a caller. *Not in v4 either: the retargeting
+      reads COCO-WholeBody directly, for the toes, heels and hands H36M lacks.
+      Keep it for a lifting model, or delete it — an open question.*
 
-### v4 · the Unitree G1
-- [ ] Load `g1_29dof_rev_1_0.urdf` and its meshes at runtime, pinned and verified.
-- [ ] Retarget the 3D skeleton to the 29 joints, within the joint limits.
-- [ ] The robot beside the clip and its 3D skeleton, in step.
-- [ ] A robot-motion export for training: root pose, joint angles, velocities,
-      foot contacts, in a MuJoCo-loadable layout, with a playback check.
+### v4 · the Unitree G1 — shipped in 4.0.0
+- [x] Load `g1_29dof_rev_1_0.urdf` and its meshes at runtime, pinned and verified.
+- [x] Retarget the 3D skeleton to the 29 joints, within the joint limits.
+- [x] The robot beside the clip and its 3D skeleton, in step.
+- [x] Check the motion against the motors' speed, and slow it to fit.
+- [ ] Confirm the target robot's `mode_machine`; `rev_1_0` is the default.
+- [ ] Retargeting runs at ~10 frames/s in pure numpy; fine offline, slow for live.
+
+### v4.1 · a robot-motion export
+- [ ] Root pose, 29 joint angles (by name), velocities, foot contacts, confidence.
+- [ ] Root travel from planted feet, labelled as an estimate (`--root fixed|planted`).
+- [ ] Verify MuJoCo `qpos` and Unitree LAFAN1 CSV conventions before matching them.
+- [ ] MuJoCo kinematic playback check, behind an optional extra.
 
 ---
 

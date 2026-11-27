@@ -7,8 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet. v4 is the Unitree G1: the same motion on the robot, then a
-robot-motion export to train from.
+Nothing yet. v4.1 is a robot-motion export to train a G1 policy from.
+
+## [4.0.0] — 2026-11-27
+
+v4 — the Unitree G1. A major version for a new package (`alchemypose.robot`) and
+a new panel; nothing earlier moved.
+
+### Added
+
+- **`alchemypose.robot`**, Qt-free: Unitree's `g1_29dof_rev_1_0` model (BSD-3)
+  pinned to one `unitree_ros` commit and fetched at runtime with a SHA-256 per
+  file; a URDF reader and forward kinematics that agree with MuJoCo's to
+  10⁻¹⁵ m; a binary STL reader.
+- **Retargeting** (`robot.retarget`): each human limb rebuilt on the robot's own
+  link lengths, the torso and feet matched as rigid frames, solved by damped
+  least squares inside the joint limits, warm-started per frame, with targets
+  that fade in with confidence. The elbow is stopped at straight (the G1's
+  travels past it, and the solver found a mimic there); shoulder twist is held
+  as the human arm straightens; the pelvis heading is 1€-smoothed; the joint
+  trajectories get a 50 ms zero-phase low-pass. On the reference clip: median
+  2.9 cm from target, fastest joint at 43% of its rated speed.
+- **A speed check** against the URDF's velocity limits, and `retime` to slow a
+  motion until it fits.
+- **The G1 panel** beside the 3D skeleton, posed in step with playback, from
+  Unitree's meshes with lighting baked in; a **G1** toolbar toggle; a playback
+  **speed** box that drops to a rate the robot can follow.
 
 ## [3.0.0] — 2026-11-27
 
@@ -549,7 +573,8 @@ than Fixed: nothing in this repository was ever broken by it.
   have merged into an empty `main`. From v2 the branch-and-pull-request convention in
   `todo.md` applies.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyPose/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyPose/compare/v1.0.0...v1.1.0
