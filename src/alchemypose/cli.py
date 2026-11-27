@@ -299,6 +299,9 @@ def image(
     preset: str = typer.Option("performance", help=_PRESET_HELP),
     json_out: Path | None = typer.Option(None, "--json", help="Write the result here instead of stdout."),
     csv_out: Path | None = typer.Option(None, "--csv", help="Also write a flat CSV here."),
+    gltf_out: Path | None = typer.Option(
+        None, "--gltf", help="Also write person 1's 3D pose as a .glb (needs --preset 3d)."
+    ),
 ) -> None:
     """Run pose estimation on one image and print the result as JSON."""
     preset = _checked_preset(preset)
@@ -306,6 +309,8 @@ def image(
         raise _fail(f"{path} not found.")
     json_out = _checked_output(json_out, "--json")
     csv_out = _checked_output(csv_out, "--csv")
+    gltf_out = _checked_output(gltf_out, "--gltf")
+    _checked_gltf_preset(gltf_out, preset)
 
     from alchemypose.core.serialize import to_csv, to_json
     from alchemypose.inference.rtmw import RTMWEngine
@@ -326,6 +331,7 @@ def image(
     if csv_out is not None:
         csv_out.write_text(to_csv(result))
         typer.echo(f"Wrote {csv_out}")
+    _write_gltf(result, gltf_out)
 
 
 @app.command()
@@ -338,6 +344,9 @@ def video(
         1, "--det-interval", min=1, help="Run the person detector every N frames; crop the rest from the last pose."
     ),
     use_cache: bool = typer.Option(True, "--cache/--no-cache", help="Reuse an earlier analysis of the same file."),
+    gltf_out: Path | None = typer.Option(
+        None, "--gltf", help="Also write person 1's 3D motion as an animated .glb (needs --preset 3d)."
+    ),
 ) -> None:
     """Run pose estimation on every frame of a video, tracking each person through it."""
     preset = _checked_preset(preset)
@@ -345,6 +354,8 @@ def video(
         raise _fail(f"{path} not found.")
     json_out = _checked_output(json_out, "--json")
     csv_out = _checked_output(csv_out, "--csv")
+    gltf_out = _checked_output(gltf_out, "--gltf")
+    _checked_gltf_preset(gltf_out, preset)
 
     import time
 
@@ -400,6 +411,27 @@ def video(
     if csv_out is not None:
         csv_out.write_text(to_csv(result))
         typer.echo(f"Wrote {csv_out}")
+    _write_gltf(result, gltf_out)
+
+
+def _checked_gltf_preset(gltf_out: Path | None, preset: str) -> None:
+    """Refuse ``--gltf`` up front on a preset with no depth head, before minutes of inference."""
+    if gltf_out is not None and weights.REGISTRY[weights.PRESETS[preset][1]].z_range is None:
+        raise _fail(f"--gltf needs 3D keypoints; preset {preset!r} has none. Use --preset 3d.")
+
+
+def _write_gltf(result: object, gltf_out: Path | None) -> None:
+    if gltf_out is None:
+        return
+    from alchemypose.core.gltf import NoMotion, skeleton_glb
+    from alchemypose.core.schema import PoseResult
+
+    assert isinstance(result, PoseResult)
+    try:
+        gltf_out.write_bytes(skeleton_glb(result, track_id=0))
+    except NoMotion as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Wrote {gltf_out}")
 
 
 @models_app.command("list")
