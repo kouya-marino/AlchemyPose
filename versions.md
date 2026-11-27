@@ -19,6 +19,26 @@ scheduled for 1.0.0. That mistake is not worth repeating.
 
 ## Shipped
 
+### v4 — the Unitree G1 · 4.0.0 · 2026-11-27
+
+**Status: shipped in 4.0.0.** The same motion on Unitree's 29-joint G1, beside the
+clip and its 3D skeleton. The model is fetched at runtime from a pinned commit
+and verified per file; forward kinematics agree with MuJoCo. Retargeting matches
+bone directions on the robot's own proportions, inside its limits, and checks
+the result against its motors' speed.
+
+What getting it right took, recorded because each was found the hard way on the
+reference clip: a regularisation weight that was a bias rather than a smoother
+(15.6 cm off a pose the robot can make); an elbow that travels past straight,
+where the solver found a hyperextended mimic and snapped out of it at 36 rad/s;
+a wrist point that was not rigid on the forearm; foot points from two
+independent directions that a rigid foot cannot meet at once; targets blinking
+at a hard confidence cut-off; and a three-frame tracking glitch only a trajectory
+filter removes. Each spike frame was attributed before anything was changed.
+
+`core/h36m.py` still has no caller: the retargeting reads COCO-WholeBody directly,
+which carries the toes, heels and hand landmarks H36M-17 lacks.
+
 ### v3 — 3D · 3.0.0 · 2026-11-27
 
 **Status: shipped in 3.0.0.** RTMW3D runs as the `3d` preset, `keypoints_3d` is
@@ -254,12 +274,12 @@ about a visual tool. Nothing is video and nothing is 3D.
 
 ## Planned
 
-### v4 — the Unitree G1
+### v4.1 — a robot-motion export
 
-The same motion on Unitree's 29-joint G1 humanoid (`g1_29dof_rev_1_0.urdf` from
-`unitree_ros`, BSD-3), beside the clip and its 3D skeleton, and then a robot-motion
-export — root pose, 29 joint angles, velocities, foot contacts — in a layout
-MuJoCo and Isaac Lab trainers load, so a policy can be trained to perform it.
+Root pose, the 29 joint angles, velocities and foot contacts, keyed by joint name,
+in a layout MuJoCo and Isaac Lab trainers load, with a MuJoCo kinematic playback
+check — the file a policy is trained from. Root travel and ground contact are
+estimates from one camera, and labelled as such.
 
 ## Decisions that shaped v1
 

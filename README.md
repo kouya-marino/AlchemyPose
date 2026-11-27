@@ -1,6 +1,6 @@
 # AlchemyPose
 
-[![PyPI](https://img.shields.io/badge/PyPI-v3.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
+[![PyPI](https://img.shields.io/badge/PyPI-v4.0.0-blue.svg)](https://pypi.org/project/alchemypose/)
 [![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -16,7 +16,7 @@ leg, the face on its own.
 
 ![The AlchemyPose window: two people on a 1935 street photograph, each drawn as a full-body skeleton, with the layer tree and preset chips on the right](https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/assets/screenshot.png)
 
-> **3.0.0 — photographs, video, webcam and 3D.** `pip install alchemypose`, type
+> **4.0.0 — photographs, video, webcam, 3D and the Unitree G1.** `pip install alchemypose`, type
 > `alchemypose`, and the window opens. Every person in the photograph you drop in
 > comes back with 133 keypoints on a zoomable canvas, driven by a layer tree, preset
 > chips and a confidence slider. The face resolves from contours to individual points
@@ -26,8 +26,9 @@ leg, the face on its own.
 > switch on the webcam for live pose — see [Video and webcam](#video-and-webcam). The
 > CLI produces the same results with no window at all. Pick the **3D** preset and
 > every keypoint gains a depth, shown as an orbitable skeleton beside the picture and
-> exportable as animated glTF — see [In 3D](#in-3d). The Unitree G1 is next — see
-> [Roadmap](#roadmap).
+> exportable as animated glTF — see [In 3D](#in-3d). Switch on **G1** and Unitree's
+> 29-joint humanoid performs the same motion beside it — see
+> [On a Unitree G1](#on-a-unitree-g1).
 
 ---
 
@@ -52,7 +53,7 @@ alchemypose
 ```
 
 The second line opens the window: `alchemypose` on its own is the application.
-`alchemypose --version` prints `3.0.0`, and the subcommands further down do the same
+`alchemypose --version` prints `4.0.0`, and the subcommands further down do the same
 work with no window at all.
 
 From source instead, if you have access to the repository:
@@ -236,6 +237,52 @@ The 3D view uses pyqtgraph over PyOpenGL — the `threed` extra, `pip install
 "alchemypose[threed]"`. Without it, or on a machine with no display, the panel says so
 instead of drawing.
 
+### On a Unitree G1
+
+Switch on **G1** in the toolbar and a third panel shows Unitree's 29-joint G1
+humanoid performing the same motion — beside the clip and its 3D skeleton, in step
+with every frame, from Unitree's own model and meshes. It needs depth, so it turns the
+3D preset on if it is off.
+
+![The window with the G1 on: the 1935 photograph, the first woman's 3D skeleton, and the Unitree G1 holding the same pose](https://raw.githubusercontent.com/kouya-marino/AlchemyPose/main/assets/screenshot-g1.png)
+
+**What it does.** Each frame's 3D skeleton becomes the G1's 29 joint angles. Not by
+copying positions — a dancer and a 1.3 m robot have different limbs — but by
+directions: every human limb is rebuilt on the robot's own link lengths, from its own
+hips and shoulders, and the robot's knees, ankles, feet, shoulders, elbows, wrists and
+hands are solved onto those targets inside its joint limits. Rigid end segments are
+matched as frames — the torso by its up and across axes, each foot by its heel-to-toe
+line — so the robot is never asked for two foot points its rigid foot cannot reach at
+once. The torso's facing goes into the pelvis; the joint angles are relative to it.
+
+**How well, on the reference dance clip** (300 frames, Linux): the robot's points land
+a median 2.9 cm from their targets (9.6 cm at the 95th percentile, which is where the
+tracked right arm glitches), in about 30 s for the clip. The fastest joint peaks at
+43% of its motor's rated speed, so the dance fits the robot as recorded. What the G1
+cannot do is plain in the numbers: its ankle roll travels only ±15°, so in the
+dancer's wide stance it sits at that limit for most of the clip.
+
+**Too fast for the robot?** Every retarget is checked against the URDF's velocity
+limits, and the status bar says if a motion needs more than half of any motor's rated
+speed and how much slower it must play to stay inside that — and the transport's speed
+box drops to the nearest rate that fits. The check measures exactly the trajectory
+that is played, after its light zero-phase smoothing, so a fast moment is never
+averaged away.
+
+**What it is not.** This is kinematics: joint angles, not torques; nothing here knows
+the robot's mass, balance or contact forces, and nothing connects to a robot. A pose
+the G1 can be put in is not always one it can hold — training a policy in simulation is
+what makes a motion balanceable, and the robot-motion export for that is next on the
+[roadmap](#roadmap).
+
+**The model.** `g1_29dof_rev_1_0` from [unitree_ros](https://github.com/unitreerobotics/unitree_ros)
+(BSD-3-Clause, © Unitree Robotics), pinned to one commit, fetched once at runtime — the
+URDF, its MuJoCo twin and the 35 meshes it draws, 19 MB — and verified file by file,
+like the pose models. Nothing of it is in the wheel. The forward kinematics agree with
+MuJoCo's to 10⁻¹⁵ m on that URDF, and to half a micrometre on Unitree's own MJCF. If
+your G1 reports a newer `mode_machine` (the `mode_11`–`mode_16` models), joint names,
+order and limits are the same; only the wrist geometry differs.
+
 ### On an NVIDIA GPU
 
 Video is where speed matters: the analysis runs the models once per frame. ONNX
@@ -412,9 +459,14 @@ inference/   ONNX sessions · YOLOX detection · SimCC decoding · weight cache 
              the worker thread · the offline video pass and its cache —
              no Qt, so it is testable headless
 
+robot/       the Unitree G1: pinned, verified assets · URDF and forward
+             kinematics · binary STL · retargeting and the speed check —
+             no Qt, no OpenGL
+
 gui/         PySide6: canvas · layer tree · preset and person chips ·
              confidence slider · inspector · transport · video and webcam modes ·
-             the 3D panel (pyqtgraph; its geometry is built without OpenGL)
+             the 3D panel and the G1 panel (pyqtgraph; their geometry is
+             built without OpenGL)
 ```
 
 `import alchemypose` pulls in no Qt at all — the application class resolves lazily —
@@ -470,8 +522,15 @@ result by `frame_index` and never waits on a model.
 - [x] The orbitable 3D panel, on the `threed` extra (never QtQuick3D or QtGraphs)
 - [x] Animated, skinned glTF export, y-up at the boundary only
 
-**v4 — the Unitree G1.** The same motion on the 29-joint G1 humanoid, beside the clip
-and its 3D skeleton; then a robot-motion export to train a policy from.
+**v4 — the Unitree G1.** Shipped in 4.0.0.
+
+- [x] Unitree's G1 model, pinned and verified, with forward kinematics checked against MuJoCo
+- [x] Retargeting onto its 29 joints, inside its limits, with the speed check
+- [x] The robot beside the clip and its 3D skeleton, in step, with playback speed
+
+**v4.1 — a robot-motion export to train from.** Root pose, the 29 joint angles,
+velocities and foot contacts, in a layout MuJoCo and Isaac Lab trainers load, with a
+MuJoCo playback check.
 
 ---
 
@@ -487,12 +546,14 @@ QT_QPA_PLATFORM=offscreen pytest tests/gui -m gui
 pytest tests/integration -m models    # skipped unless weights are cached
 ```
 
-At the time of writing that is 650 tests. On a machine with the weights cached they
+At the time of writing that is 688 tests. On a machine with the weights cached they
 all pass, bar the two that need CoreML and skip anywhere else — measured on Linux,
-648 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
+686 passed and 2 skipped. Twelve are marked `models` — two in `tests/unit`, ten in
 `tests/integration` — and check the cache rather than downloading anything, and one
 README test compares the stated download size against the cached files, so without
-weights the same Linux run reports 637 passed and 13 skipped. The video tests encode
+weights the same Linux run reports 674 passed and 14 skipped (the extra one parses the
+cached G1 meshes). The robot tests need no network: the G1's URDF is a test fixture,
+with Unitree's licence beside it, and MuJoCo's link poses for it are recorded there. The video tests encode
 their own clips with PyAV (a `dev` dependency) and never touch a file on disk beyond
 `tmp_path`. `main.py` sits outside `src/`, so neither
 `ruff check src tests` nor a bare `mypy` reaches it; it needs naming, which is why it
@@ -602,4 +663,8 @@ would wave the rest of it through.
 MIT — see the `LICENSE` file in the source distribution.
 
 Model weights are Apache-2.0 from [MMPose](https://github.com/open-mmlab/mmpose)
-and are downloaded at runtime, not redistributed here.
+and are downloaded at runtime, not redistributed here. The Unitree G1 model is
+BSD-3-Clause, © Unitree Robotics, from
+[unitree_ros](https://github.com/unitreerobotics/unitree_ros); it is downloaded at
+runtime, and its URDF alone is copied into `tests/fixtures/unitree_g1/` with that
+licence beside it.
